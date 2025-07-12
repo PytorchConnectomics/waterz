@@ -260,3 +260,6 @@ def agglomerate(
         aff_threshold_high,
         return_merge_history,
         return_region_graph)
+
+
+from .seg_init import watershed_concat
