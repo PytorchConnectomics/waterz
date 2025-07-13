@@ -30,7 +30,7 @@ def get_seeds(boundary, method='grid', next_id = 1,
         seeds[seeds==next_id] = 0
     return seeds, num_seeds
 
-def watershed_concat(affs, affs_ran=255.0, seed_method='maxima_distance', use_mahotas_watershed = True):
+def watershed_concat(affs, affs_ran=255.0, seed_method='maxima_distance', use_mahotas_watershed = True, boundary_thres=1):
     fragments = np.zeros(affs[0].shape).astype(np.uint64)
     next_id = 1
     for z in tqdm(range(affs.shape[1])):
@@ -46,5 +46,7 @@ def watershed_concat(affs, affs_ran=255.0, seed_method='maxima_distance', use_ma
         else:
             fragments[z] = ndimage.watershed_ift((255*boundary).astype(np.uint8), seeds)
         next_id += num_seeds
+        if boundary_thres < 1:
+            fragments[z][boundary > boundary_thres] = 0
 
     return fragments
