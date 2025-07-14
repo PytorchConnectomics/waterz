@@ -30,6 +30,12 @@ public:
 		_stale(initialRegionGraph),
 		_mergedUntil(std::numeric_limits<ScoreType>::lowest()) {}
 
+    void setStale(bool val){
+        for (EdgeIdType e = 0; e < _regionGraph.numEdges(); e++) {
+			_stale[e] = val;
+        }
+    }
+
 	/**
 	 * Merge a RAG with the given edge scoring function until the given threshold.
 	 */

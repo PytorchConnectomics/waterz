@@ -10,6 +10,7 @@ def agglomerate(
         fragments = None,
         aff_threshold_low  = 0.0001,
         aff_threshold_high = 0.9999,
+        rg_opt = 0,
         return_merge_history = False,
         return_region_graph = False,
         scoring_function = 'OneMinus<MeanAffinity<RegionGraphType, ScoreValue>>',
@@ -263,3 +264,4 @@ def agglomerate(
 
 
 from .seg_init import watershed_concat
+from .seg_waterz import getRegionGraph

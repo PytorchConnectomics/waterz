@@ -38,6 +38,12 @@ template <> struct watershed_traits<uint64_t>
 };
 
 template < typename T >
+using array_ref = boost::multi_array_ref<T,1>;
+
+template < typename T >
+using array_ref_ptr = std::shared_ptr<array_ref<T>>;
+
+template < typename T >
 using volume = boost::multi_array<T,3>;
 
 template < typename T >

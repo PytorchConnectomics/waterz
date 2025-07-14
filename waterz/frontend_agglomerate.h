@@ -152,6 +152,14 @@ WaterzState initialize(
 		AffValue        affThresholdHigh = 0.9999,
 		bool            findFragments = true);
 
+WaterzState initializeFromRg(
+		size_t          num_node,
+		size_t          num_edge,
+		SegID*          rg_id1,
+		SegID*          rg_id2,
+		AffValue*       rg_score);
+
+
 std::vector<Merge> mergeUntil(
 		WaterzState& state,
 		float        threshold);
@@ -159,5 +167,13 @@ std::vector<Merge> mergeUntil(
 std::vector<ScoredEdge> getRegionGraph(WaterzState& state);
 
 void free(WaterzState& state);
+
+std::vector<ScoredEdge> rgFromData(
+		std::size_t     width,
+		std::size_t     height,
+		std::size_t     depth,
+		const AffValue* affinity_data,
+		SegID*          segmentation_data,
+		std::size_t     rg_opt);
 
 #endif
