@@ -12,11 +12,8 @@
 #include "backend/HistogramQuantileProvider.hpp"
 #include "backend/VectorQuantileProvider.hpp"
 #include "evaluate.hpp"
+#include "frontend_shared.h"
 
-typedef uint64_t SegID;
-typedef uint32_t GtID;
-typedef float AffValue;
-typedef float ScoreValue;
 typedef RegionGraph<SegID> RegionGraphType;
 
 // to be created by __init__.py
@@ -26,39 +23,6 @@ typedef RegionGraph<SegID> RegionGraphType;
 typedef typename ScoringFunctionType::StatisticsProviderType StatisticsProviderType;
 typedef IterativeRegionMerging<SegID, ScoreValue, QueueType> RegionMergingType;
 
-struct Metrics {
-
-	double voi_split;
-	double voi_merge;
-	double rand_split;
-	double rand_merge;
-};
-
-struct Merge {
-
-	SegID a;
-	SegID b;
-	SegID c;
-	ScoreValue score;
-};
-
-struct ScoredEdge {
-
-	ScoredEdge(SegID u_, SegID v_, ScoreValue score_) :
-		u(u_),
-		v(v_),
-		score(score_) {}
-
-	SegID u;
-	SegID v;
-	ScoreValue score;
-};
-
-struct WaterzState {
-
-	int     context;
-	Metrics metrics;
-};
 
 class WaterzContext {
 
@@ -162,7 +126,8 @@ WaterzState initializeFromRg(
 
 std::vector<Merge> mergeUntil(
 		WaterzState& state,
-		float        threshold);
+		float        threshold,
+		bool		 do_segmentation = true);
 
 std::vector<ScoredEdge> getRegionGraph(WaterzState& state);
 

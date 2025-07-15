@@ -187,7 +187,8 @@ initializeFromRg(
 std::vector<Merge>
 mergeUntil(
 		WaterzState& state,
-		float        threshold) {
+		float        threshold,
+		bool		 do_segmentation) {
 
 	WaterzContext* context = WaterzContext::get(state.context);
 
@@ -201,24 +202,26 @@ mergeUntil(
 			*context->statisticsProvider,
 			threshold,
 			mergeHistoryVisitor);
+	
+	if (do_segmentation) {
+		if (merged) {
 
-	if (merged) {
+			std::cout << "extracting segmentation" << std::endl;
 
-		std::cout << "extracting segmentation" << std::endl;
+			context->regionMerging->extractSegmentation(*context->segmentation);
+		}
 
-		context->regionMerging->extractSegmentation(*context->segmentation);
-	}
+		if (context->groundtruth) {
 
-	if (context->groundtruth) {
+			std::cout << "evaluating current segmentation against ground-truth" << std::endl;
 
-		std::cout << "evaluating current segmentation against ground-truth" << std::endl;
+			auto m = compare_volumes(*context->groundtruth, *context->segmentation);
 
-		auto m = compare_volumes(*context->groundtruth, *context->segmentation);
-
-		state.metrics.rand_split = std::get<0>(m);
-		state.metrics.rand_merge = std::get<1>(m);
-		state.metrics.voi_split  = std::get<2>(m);
-		state.metrics.voi_merge  = std::get<3>(m);
+			state.metrics.rand_split = std::get<0>(m);
+			state.metrics.rand_merge = std::get<1>(m);
+			state.metrics.voi_split  = std::get<2>(m);
+			state.metrics.voi_merge  = std::get<3>(m);
+		}
 	}
 
 	return mergeHistory;

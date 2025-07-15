@@ -38,7 +38,7 @@ def agglomerate(
         find_fragments = False
     
     cdef WaterzState state;
-    if rg_opt in [0, 3]: #waterz segmentation
+    if rg_opt in [0, 3]: # waterz segmentation
         if rg_opt == 0: # from scratch
             state = __initialize(affs, segmentation, gt, aff_threshold_low, aff_threshold_high, find_fragments)
         elif rg_opt == 3: # load from precomputed rg
@@ -47,29 +47,27 @@ def agglomerate(
             state = __initializeFromRg(segmentation[:,0], segmentation[:,1], affs)
 
         thresholds.sort()
+        do_segmentation = rg_opt == 0
         for threshold in thresholds:
+            merge_history = mergeUntil(state, threshold, do_segmentation)
+            
+            if do_segmentation: # return segmentation                
+                result = (segmentation,)
+                if gt is not None:
+                    stats = {}
+                    stats['V_Rand_split'] = state.metrics.rand_split
+                    stats['V_Rand_merge'] = state.metrics.rand_merge
+                    stats['V_Info_split'] = state.metrics.voi_split
+                    stats['V_Info_merge'] = state.metrics.voi_merge
+                    result += (stats,)
 
-            merge_history = mergeUntil(state, threshold)
+                if return_merge_history:
+                    result += (merge_history,)
 
-            result = (segmentation,)
-
-            if gt is not None:
-
-                stats = {}
-                stats['V_Rand_split'] = state.metrics.rand_split
-                stats['V_Rand_merge'] = state.metrics.rand_merge
-                stats['V_Info_split'] = state.metrics.voi_split
-                stats['V_Info_merge'] = state.metrics.voi_merge
-
-                result += (stats,)
-
-            if return_merge_history:
-
+                if return_region_graph:
+                    result += (getRegionGraph(state),)
+            elif rg_opt == 3: # only relabel array
                 result += (merge_history,)
-
-            if return_region_graph:
-
-                result += (getRegionGraph(state),)
 
             if len(result) == 1:
                 yield result[0]
@@ -87,7 +85,7 @@ def rgToArr(rg):
     # convert waterz rg into array
     num_rg = len(rg)
     rg_id = np.zeros([num_rg,2],np.uint32)
-    rg_sc = np.zeros(num_rg, np.uint8)
+    rg_sc = np.zeros(num_rg, np.float32)
     for i in range(num_rg):
         rg_id[i] = [rg[i]['u'],rg[i]['v']]
         rg_sc[i] = rg[i]['score']
@@ -213,7 +211,8 @@ cdef extern from "frontend_agglomerate.h":
 
     vector[Merge] mergeUntil(
             WaterzState& state,
-            float        threshold)
+            float        threshold,
+            bool		 do_segmentation);
 
     vector[ScoredEdge] getRegionGraph(WaterzState& state)
 

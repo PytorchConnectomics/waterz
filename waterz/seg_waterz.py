@@ -28,12 +28,12 @@ def getRegionGraph(affs, fragments, rg_opt = 1, merge_function = None, discretiz
         return rg
 
 def waterzFromRegionGraph(rg_id, rg_score, thresholds, merge_function = None, discretize_queue=256, rebuild = True):
-    for rg in agglomerate(
+    for merge_history in agglomerate(
             rg_score.astype(np.float32),
             thresholds = thresholds,
             fragments = rg_id.astype(np.uint64),
             scoring_function = getScoreFunc(merge_function),
             discretize_queue = discretize_queue,
-            rg_opt = 4,
+            rg_opt = 3,
             force_rebuild=rebuild):
-        return rg
+        return merge_history

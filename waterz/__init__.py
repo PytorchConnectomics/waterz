@@ -259,9 +259,10 @@ def agglomerate(
         fragments,
         aff_threshold_low,
         aff_threshold_high,
+        rg_opt,
         return_merge_history,
         return_region_graph)
 
-
+from .region_graph import merge_id
 from .seg_init import watershed_concat
 from .seg_waterz import getRegionGraph
