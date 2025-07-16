@@ -3,10 +3,12 @@
 
 #include <iostream>
 
-typedef uint32_t SegID;
+typedef uint64_t SegID;
 typedef uint32_t GtID;
-typedef uint8_t AffValue;
-typedef uint8_t ScoreValue;
+//typedef uint8_t AffValue;
+//typedef uint8_t ScoreValue;
+typedef float AffValue;
+typedef float ScoreValue;
 
 
 struct Metrics {
