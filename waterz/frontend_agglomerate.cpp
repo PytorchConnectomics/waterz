@@ -304,6 +304,14 @@ vector<ScoredEdge> rgFromData(
 			numNodes - 1,
 			*statisticsProvider,
 			*regionGraph);
+     } else if (rg_opt == 3){
+        // only xy-direction
+        get_region_graph_xy(
+			affinities,
+			*segmentation,
+			numNodes - 1,
+			*statisticsProvider,
+			*regionGraph);
     }
 	std::shared_ptr<ScoringFunctionType> scoringFunction(
 			new ScoringFunctionType(*regionGraph, *statisticsProvider)

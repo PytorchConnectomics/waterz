@@ -11,13 +11,13 @@ def merge_id(id1, id2, id_thres=0):
         id2 = np.ascontiguousarray(id2)
     if id_thres == 0:
         id_thres = max(id1.max(), id2.max()) + 1
-    mapping = np.arange(id_thres).astype(np.uint32)
+    mapping = np.arange(id_thres).astype(np.uint64)
     __merge_id(id1, id2, mapping, id_thres)
     return mapping 
 
-def __merge_id(np.ndarray[np.uint32_t, ndim=1] id1,
-                 np.ndarray[np.uint32_t, ndim=1] id2,
-                 np.ndarray[np.uint32_t, ndim=1] mapping, 
+def __merge_id(np.ndarray[np.uint64_t, ndim=1] id1,
+                 np.ndarray[np.uint64_t, ndim=1] id2,
+                 np.ndarray[np.uint64_t, ndim=1] mapping, 
                  id_thres):
     '''Find the global mapping of IDs from the region graph without count constraints
     
@@ -27,9 +27,9 @@ def __merge_id(np.ndarray[np.uint32_t, ndim=1] id1,
     :param id2: a 1D array of the righthand side of the two adjacent regions
     :returns: a 1D array of the global IDs per local ID
     '''
-    cdef uint32_t* id1_data;
-    cdef uint32_t* id2_data;
-    cdef uint32_t* mapping_data;
+    cdef uint64_t* id1_data;
+    cdef uint64_t* id2_data;
+    cdef uint64_t* mapping_data;
     id1_data = &id1[0];
     id2_data = &id2[0];
     mapping_data = &mapping[0];
@@ -38,9 +38,9 @@ def __merge_id(np.ndarray[np.uint32_t, ndim=1] id1,
 
 cdef extern from "frontend_region_graph.h":
     void cpp_merge_id(
-        uint32_t*          id1,
-        uint32_t*          id2,
-        uint32_t*          mapping,
-        uint32_t           num_edge,
-        uint32_t           num_id,
-        uint32_t           id_thres);
+        uint64_t*          id1,
+        uint64_t*          id2,
+        uint64_t*          mapping,
+        uint64_t           num_edge,
+        uint64_t           num_id,
+        uint64_t           id_thres);

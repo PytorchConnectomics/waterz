@@ -38,10 +38,10 @@ def agglomerate(
         find_fragments = False
     
     cdef WaterzState state;
-    if rg_opt in [0, 3]: # waterz segmentation
+    if rg_opt in [0, 4]: # waterz segmentation
         if rg_opt == 0: # from scratch
             state = __initialize(affs, segmentation, gt, aff_threshold_low, aff_threshold_high, find_fragments)
-        elif rg_opt == 3: # load from precomputed rg
+        elif rg_opt == 4: # load from precomputed rg
             # affs -> rg_score
             # segmentation -> rg_id
             state = __initializeFromRg(segmentation[:,0], segmentation[:,1], affs)
@@ -66,8 +66,8 @@ def agglomerate(
 
                 if return_region_graph:
                     result += (getRegionGraph(state),)
-            elif rg_opt == 3: # only relabel array
-                result += (merge_history,)
+            elif rg_opt == 4: # only relabel array
+                result = (getRegionGraph(state),)
 
             if len(result) == 1:
                 yield result[0]
@@ -75,7 +75,7 @@ def agglomerate(
                 yield result
 
         free(state)
-    elif rg_opt in [1, 2]: # compute rg
+    elif rg_opt in [1, 2, 3]: # compute rg
         yield __getRegionGraph(affs, segmentation, rg_opt)
     else:
         raise ValueError("Unknown region graph options")
@@ -225,4 +225,4 @@ cdef extern from "frontend_agglomerate.h":
 		uint32_t     depth,
 		const float* affinity_data,
 		uint64_t*    segmentation_data,
-		uint32_t     rg_opt);
+	    size_t       rg_opt);

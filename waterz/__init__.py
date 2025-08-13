@@ -265,4 +265,4 @@ def agglomerate(
 
 from .region_graph import merge_id
 from .seg_init import watershed_concat
-from .seg_waterz import getRegionGraph
+from .seg_waterz import getRegionGraph, getScoreFunc
