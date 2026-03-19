@@ -43,3 +43,54 @@ def test_agglomerate() -> None:
         # just what I observed... from my random test
         # change when better test data is available
         assert np.all(segmentation == 1)
+
+
+def test_waterz_can_return_region_graph() -> None:
+    affinities = np.ones((3, 2, 2, 2), dtype=np.float32)
+    fragments = np.zeros((2, 2, 2), dtype=np.uint64)
+    fragments[:, :, 0] = 1
+    fragments[:, :, 1] = 2
+
+    expected = []
+    for segmentation, region_graph in wz.agglomerate(
+        affinities,
+        [0.0],
+        fragments=fragments,
+        return_region_graph=True,
+    ):
+        expected.append((np.array(segmentation, copy=True), region_graph))
+
+    actual = wz.waterz(
+        affinities,
+        [0.0],
+        fragments=fragments,
+        return_region_graph=True,
+    )
+
+    assert len(actual) == len(expected) == 1
+    expected_segmentation, expected_region_graph = expected[0]
+    actual_segmentation, actual_region_graph = actual[0]
+    np.testing.assert_array_equal(actual_segmentation, expected_segmentation)
+    assert actual_region_graph == expected_region_graph
+
+
+def test_waterz_as_dict_preserves_tuple_results() -> None:
+    affinities = np.ones((3, 2, 2, 2), dtype=np.float32)
+    fragments = np.zeros((2, 2, 2), dtype=np.uint64)
+    fragments[:, :, 0] = 1
+    fragments[:, :, 1] = 2
+
+    actual = wz.waterz(
+        affinities,
+        [0.0],
+        fragments=fragments,
+        return_region_graph=True,
+        as_dict=True,
+    )
+
+    assert list(actual.keys()) == [0.0]
+    segmentation, region_graph = actual[0.0]
+    assert isinstance(segmentation, np.ndarray)
+    assert segmentation.shape == (2, 2, 2)
+    assert isinstance(region_graph, list)
+    assert region_graph

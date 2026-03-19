@@ -158,6 +158,19 @@ std::vector<Merge> mergeUntil(
 
 std::vector<ScoredEdge> getRegionGraph(WaterzState& state);
 
+/**
+ * Build region graph and extract scored edges without creating
+ * RegionMerging or priority queue.  Much faster than
+ * initialize() + mergeUntil(0) + getRegionGraph() when only the
+ * scored edge list is needed.
+ */
+std::vector<ScoredEdge> buildRegionGraphOnly(
+		std::size_t     width,
+		std::size_t     height,
+		std::size_t     depth,
+		const AffValue* affinity_data,
+		SegID*          segmentation_data);
+
 void free(WaterzState& state);
 
 #endif

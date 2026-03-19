@@ -24,4 +24,28 @@ evaluate = Extension(
     extra_compile_args=["-std=c++11", "-w"],
 )
 
-setup(ext_modules=cythonize([evaluate]))
+merge = Extension(
+    name="waterz.merge",
+    sources=[
+        "src/waterz/merge.pyx",
+        "src/waterz/frontend_merge.cpp",
+    ],
+    include_dirs=include_dirs,
+    language="c++",
+    extra_link_args=["-std=c++11"],
+    extra_compile_args=["-std=c++11", "-w", "-O2"],
+)
+
+region_graph = Extension(
+    name="waterz.region_graph",
+    sources=[
+        "src/waterz/region_graph.pyx",
+        "src/waterz/frontend_region_graph.cpp",
+    ],
+    include_dirs=include_dirs,
+    language="c++",
+    extra_link_args=["-std=c++11"],
+    extra_compile_args=["-std=c++11", "-w", "-O2"],
+)
+
+setup(ext_modules=cythonize([evaluate, merge, region_graph]))

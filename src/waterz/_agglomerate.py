@@ -142,39 +142,76 @@ def agglomerate(
             affs, range(100,10000,100), gt, return_merge_history = True):
             # ...
     """
+    import subprocess
+    import hashlib
+
     import witty
 
-    with TemporaryDirectory() as tmpdir:
-        # supply #include <ScoringFunction.h> in frontend_agglomerate.h
-        tmp_path = Path(tmpdir)
-        scoredef = f"typedef {scoring_function} ScoringFunctionType;"
-        (tmp_path / "ScoringFunction.h").write_text(scoredef)
+    # --- Persistent header directory ---
+    # ScoringFunction.h and Queue.h must survive past the witty call because
+    # witty caches the compiled .so — but the headers are baked into the
+    # object at compile time so we only need them during the first build.
+    # We store them under the witty cache keyed by scoring_function +
+    # discretize_queue so different configs don't collide.
+    cache_dir = witty.get_witty_cache_dir()
+    header_key = hashlib.md5(
+        f"{scoring_function}|{discretize_queue}".encode()
+    ).hexdigest()[:12]
+    header_dir = cache_dir / f"_waterz_headers_{header_key}"
+    header_dir.mkdir(parents=True, exist_ok=True)
 
-        # supply #include <Queue.h> in frontend_agglomerate.h
-        queue_src = "template<typename T, typename S> using QueueType = " + (
-            "PriorityQueue<T, S>;"
-            if discretize_queue == 0
-            else f"BinQueue<T, S, {discretize_queue}>;"
-        )
-        (tmp_path / "Queue.h").write_text(queue_src)
+    scoredef = f"typedef {scoring_function} ScoringFunctionType;"
+    (header_dir / "ScoringFunction.h").write_text(scoredef)
 
-        # compile module
-        module = witty.compile_cython(
-            (HERE / "agglomerate.pyx").read_text(),
-            source_files=[str(HERE / "frontend_agglomerate.cpp")],
-            extra_link_args=["-std=c++11"],
-            extra_compile_args=["-std=c++11", "-w"],
-            include_dirs=[
-                str(HERE),
-                tmpdir,
-                str(HERE / "backend"),
-                np.get_include(),
-                "/opt/homebrew/include",
-            ],
-            language="c++",
-            quiet=True,
-            force_rebuild=force_rebuild,
-        )
+    queue_src = "template<typename T, typename S> using QueueType = " + (
+        "PriorityQueue<T, S>;"
+        if discretize_queue == 0
+        else f"BinQueue<T, S, {discretize_queue}>;"
+    )
+    (header_dir / "Queue.h").write_text(queue_src)
+
+    include_dirs = [
+        str(HERE),
+        str(header_dir),
+        str(HERE / "backend"),
+        np.get_include(),
+    ]
+
+    # Add conda/system boost headers if available
+    import sys as _sys
+    _conda_prefix = Path(_sys.prefix)
+    _boost_inc = _conda_prefix / "include"
+    if (_boost_inc / "boost").is_dir():
+        include_dirs.append(str(_boost_inc))
+
+    # --- Pre-compile frontend_agglomerate.cpp into an object file ---
+    # witty's source_files parameter is only used for cache-key hashing,
+    # not for compilation.  We compile the C++ frontend ourselves and
+    # pass the resulting .o via extra_link_args.
+    frontend_cpp = HERE / "frontend_agglomerate.cpp"
+    obj_path = cache_dir / f"_waterz_frontend_{header_key}.o"
+
+    if not obj_path.exists() or force_rebuild:
+        compile_cmd = [
+            "g++", "-c", "-fPIC",
+            "-std=c++11", "-w", "-O2",
+        ]
+        for d in include_dirs:
+            compile_cmd += ["-I", d]
+        compile_cmd += [str(frontend_cpp), "-o", str(obj_path)]
+        subprocess.check_call(compile_cmd)
+
+    # compile module
+    module = witty.compile_cython(
+        (HERE / "agglomerate.pyx").read_text(),
+        source_files=[str(frontend_cpp)],
+        extra_link_args=["-std=c++11", str(obj_path)],
+        extra_compile_args=["-std=c++11", "-w"],
+        include_dirs=include_dirs,
+        language="c++",
+        quiet=True,
+        force_rebuild=force_rebuild,
+    )
 
     # call compiled function
     return module.agglomerate(
@@ -187,3 +224,78 @@ def agglomerate(
         return_merge_history,
         return_region_graph,
     )
+
+
+def build_region_graph_only(
+    affs: NDArray[np.float32],
+    fragments: NDArray[np.uint64],
+    scoring_function: str = "MeanAffinity<RegionGraphType, ScoreValue>",
+    discretize_queue: int = 0,
+    force_rebuild: bool = False,
+) -> list:
+    """Build scored region graph without RegionMerging or priority queue.
+
+    Skips the full agglomeration state machine — only builds the region
+    graph, collects statistics, and scores each edge.  ~2-3x faster than
+    ``agglomerate(thresholds=[0], return_region_graph=True)``.
+
+    Returns list of dicts ``[{"u": id1, "v": id2, "score": float}, ...]``.
+    """
+    import subprocess
+    import hashlib
+
+    import witty
+
+    affs = np.ascontiguousarray(affs, dtype=np.float32)
+    fragments = np.ascontiguousarray(fragments, dtype=np.uint64)
+
+    cache_dir = witty.get_witty_cache_dir()
+    header_key = hashlib.md5(
+        f"{scoring_function}|{discretize_queue}".encode()
+    ).hexdigest()[:12]
+    header_dir = cache_dir / f"_waterz_headers_{header_key}"
+    header_dir.mkdir(parents=True, exist_ok=True)
+
+    (header_dir / "ScoringFunction.h").write_text(
+        f"typedef {scoring_function} ScoringFunctionType;"
+    )
+    queue_src = "template<typename T, typename S> using QueueType = " + (
+        "PriorityQueue<T, S>;"
+        if discretize_queue == 0
+        else f"BinQueue<T, S, {discretize_queue}>;"
+    )
+    (header_dir / "Queue.h").write_text(queue_src)
+
+    include_dirs = [
+        str(HERE),
+        str(header_dir),
+        str(HERE / "backend"),
+        np.get_include(),
+    ]
+    import sys as _sys
+    _boost_inc = Path(_sys.prefix) / "include"
+    if (_boost_inc / "boost").is_dir():
+        include_dirs.append(str(_boost_inc))
+
+    frontend_cpp = HERE / "frontend_agglomerate.cpp"
+    obj_path = cache_dir / f"_waterz_frontend_{header_key}.o"
+
+    if not obj_path.exists() or force_rebuild:
+        compile_cmd = ["g++", "-c", "-fPIC", "-std=c++11", "-w", "-O2"]
+        for d in include_dirs:
+            compile_cmd += ["-I", d]
+        compile_cmd += [str(frontend_cpp), "-o", str(obj_path)]
+        subprocess.check_call(compile_cmd)
+
+    module = witty.compile_cython(
+        (HERE / "agglomerate.pyx").read_text(),
+        source_files=[str(frontend_cpp)],
+        extra_link_args=["-std=c++11", str(obj_path)],
+        extra_compile_args=["-std=c++11", "-w"],
+        include_dirs=include_dirs,
+        language="c++",
+        quiet=True,
+        force_rebuild=force_rebuild,
+    )
+
+    return module.buildRegionGraphOnly(affs, fragments)

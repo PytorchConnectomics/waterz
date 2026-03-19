@@ -164,6 +164,62 @@ getRegionGraph(WaterzState& state) {
 	return regionMerging->extractRegionGraph<ScoredEdge>(*scoringFunction);
 }
 
+std::vector<ScoredEdge>
+buildRegionGraphOnly(
+		std::size_t     width,
+		std::size_t     height,
+		std::size_t     depth,
+		const AffValue* affinity_data,
+		SegID*          segmentation_data) {
+
+	std::size_t num_voxels = width*height*depth;
+
+	// wrap arrays (no copy)
+	affinity_graph_ref<AffValue> affinities(
+			affinity_data,
+			boost::extents[3][width][height][depth]
+	);
+	volume_ref<SegID> segmentation_vol(
+			segmentation_data,
+			boost::extents[width][height][depth]
+	);
+
+	// count sizes
+	std::size_t maxId = *std::max_element(segmentation_data, segmentation_data + num_voxels);
+	counts_t<std::size_t> sizes(maxId + 1, 0);
+	for (std::size_t i = 0; i < num_voxels; i++)
+		sizes[segmentation_data[i]]++;
+
+	std::size_t numNodes = sizes.size();
+
+	// build region graph + statistics (the essential work)
+	RegionGraphType regionGraph(numNodes);
+	StatisticsProviderType statisticsProvider(regionGraph);
+
+	get_region_graph(
+			affinities,
+			segmentation_vol,
+			numNodes - 1,
+			statisticsProvider,
+			regionGraph);
+
+	// score edges directly — NO RegionMerging, NO priority queue
+	ScoringFunctionType scoringFunction(regionGraph, statisticsProvider);
+
+	std::vector<ScoredEdge> edges;
+	edges.reserve(regionGraph.edges().size());
+
+	for (RegionGraphType::EdgeIdType e = 0; e < regionGraph.numEdges(); e++) {
+		ScoreValue score = scoringFunction(e);
+		edges.push_back(ScoredEdge(
+				regionGraph.edge(e).u,
+				regionGraph.edge(e).v,
+				score));
+	}
+
+	return edges;
+}
+
 void
 free(WaterzState& state) {
 
