@@ -11,6 +11,7 @@ from ._agglomerate import agglomerate
 from ._merge import get_region_graph, merge_dust, merge_segments
 from ._waterz import waterz
 from .evaluate import evaluate
+from .large_decode import LargeDecodeConfig, LargeDecodeRunner, decode_large
 from .large_workflow import (
     build_border_adjacency,
     build_chunk_grid,
@@ -20,6 +21,8 @@ from .orchestrator import TaskRecord, TaskSpec, TaskState, WorkflowOrchestrator
 from .region_graph import merge_id
 
 __all__ = [
+    "LargeDecodeConfig",
+    "LargeDecodeRunner",
     "TaskRecord",
     "TaskSpec",
     "TaskState",
@@ -28,6 +31,7 @@ __all__ = [
     "build_border_adjacency",
     "build_chunk_grid",
     "build_large_decode_tasks",
+    "decode_large",
     "evaluate",
     "get_region_graph",
     "merge_dust",
