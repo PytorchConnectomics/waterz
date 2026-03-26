@@ -11,10 +11,23 @@ from ._agglomerate import agglomerate
 from ._merge import get_region_graph, merge_dust, merge_segments
 from ._waterz import waterz
 from .evaluate import evaluate
+from .large_workflow import (
+    build_border_adjacency,
+    build_chunk_grid,
+    build_large_decode_tasks,
+)
+from .orchestrator import TaskRecord, TaskSpec, TaskState, WorkflowOrchestrator
 from .region_graph import merge_id
 
 __all__ = [
+    "TaskRecord",
+    "TaskSpec",
+    "TaskState",
+    "WorkflowOrchestrator",
     "agglomerate",
+    "build_border_adjacency",
+    "build_chunk_grid",
+    "build_large_decode_tasks",
     "evaluate",
     "get_region_graph",
     "merge_dust",

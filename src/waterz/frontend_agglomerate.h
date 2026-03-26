@@ -15,11 +15,11 @@
 
 typedef uint64_t SegID;
 typedef uint32_t GtID;
-typedef float AffValue;
-typedef float ScoreValue;
 typedef RegionGraph<SegID> RegionGraphType;
 
-// to be created by __init__.py
+// AffValue, ScoreValue, ScoringFunctionType, QueueType
+// are defined in the JIT-generated headers below.
+#include <AffType.h>
 #include <ScoringFunction.h>
 #include <Queue.h>
 
@@ -39,19 +39,19 @@ struct Merge {
 	SegID a;
 	SegID b;
 	SegID c;
-	ScoreValue score;
+	double score;  // always double for Python interop
 };
 
 struct ScoredEdge {
 
-	ScoredEdge(SegID u_, SegID v_, ScoreValue score_) :
+	ScoredEdge(SegID u_, SegID v_, double score_) :
 		u(u_),
 		v(v_),
 		score(score_) {}
 
 	SegID u;
 	SegID v;
-	ScoreValue score;
+	double score;  // always double for Python interop (Cython reads this)
 };
 
 struct WaterzState {
@@ -133,7 +133,7 @@ public:
 
 	void onMerge(SegID a, SegID b, SegID c, ScoreValue score) {
 
-		_history.push_back({a, b, c, score});
+		_history.push_back({a, b, c, (double)score});
 	}
 
 private:
@@ -154,7 +154,7 @@ WaterzState initialize(
 
 std::vector<Merge> mergeUntil(
 		WaterzState& state,
-		float        threshold);
+		ScoreValue   threshold);
 
 std::vector<ScoredEdge> getRegionGraph(WaterzState& state);
 

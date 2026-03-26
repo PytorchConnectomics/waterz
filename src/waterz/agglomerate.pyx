@@ -1,8 +1,14 @@
+# cython: language_level=3
 from libcpp.vector cimport vector
-from libc.stdint cimport uint64_t, uint32_t
+from libc.stdint cimport uint64_t, uint32_t, uint8_t
 from libcpp cimport bool
 import numpy as np
 cimport numpy as np
+
+# AffValue is typedef'd in AffType.h (JIT-generated: float or uint8_t).
+# For the default float32 path, np.float32_t is used for typed arrays.
+# The _agglomerate.py JIT helper patches these declarations to np.uint8_t
+# when compiling the uint8 variant.
 
 def agglomerate(
         affs,
@@ -14,16 +20,11 @@ def agglomerate(
         return_merge_history=False,
         return_region_graph=False):
 
-    # the C++ part assumes contiguous memory, make sure we have it (and do 
-    # nothing, if we do)
     if not affs.flags['C_CONTIGUOUS']:
-        print("Creating memory-contiguous affinity arrray (avoid this by passing C_CONTIGUOUS arrays)")
         affs = np.ascontiguousarray(affs)
     if gt is not None and not gt.flags['C_CONTIGUOUS']:
-        print("Creating memory-contiguous ground-truth arrray (avoid this by passing C_CONTIGUOUS arrays)")
         gt = np.ascontiguousarray(gt)
     if fragments is not None and not fragments.flags['C_CONTIGUOUS']:
-        print("Creating memory-contiguous fragments arrray (avoid this by passing C_CONTIGUOUS arrays)")
         fragments = np.ascontiguousarray(fragments)
 
     print("Preparing segmentation volume...")
@@ -46,21 +47,17 @@ def agglomerate(
         result = (segmentation,)
 
         if gt is not None:
-
             stats = {}
             stats['V_Rand_split'] = state.metrics.rand_split
             stats['V_Rand_merge'] = state.metrics.rand_merge
             stats['V_Info_split'] = state.metrics.voi_split
             stats['V_Info_merge'] = state.metrics.voi_merge
-
             result += (stats,)
 
         if return_merge_history:
-
             result += (merge_history,)
 
         if return_region_graph:
-
             result += (getRegionGraph(state),)
 
         if len(result) == 1:
@@ -135,13 +132,6 @@ cdef extern from "frontend_agglomerate.h":
             float        threshold)
 
     vector[ScoredEdge] getRegionGraph(WaterzState& state)
-
-    vector[ScoredEdge] buildRegionGraphOnly(
-            size_t          width,
-            size_t          height,
-            size_t          depth,
-            const float*    affinity_data,
-            uint64_t*       segmentation_data)
 
     vector[ScoredEdge] c_buildRegionGraphOnly "buildRegionGraphOnly" (
             size_t          width,

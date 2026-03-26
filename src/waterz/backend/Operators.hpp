@@ -65,12 +65,21 @@ template <typename T>
 struct one_minus {
 	T operator()(const T& x) const { return 1.0 - x; }
 };
+// uint8 specialization: 255 - x (never convert to float)
+template <>
+struct one_minus<uint8_t> {
+	uint8_t operator()(const uint8_t& x) const { return 255 - x; }
+};
 template <typename T>
 using OneMinus = UnaryOperator<T, one_minus>;
 
 template <typename T>
 struct invert {
 	T operator()(const T& x) const { return 1.0/x; }
+};
+template <>
+struct invert<uint8_t> {
+	uint8_t operator()(const uint8_t& x) const { return x > 0 ? 255/x : 255; }
 };
 template <typename T>
 using Invert = UnaryOperator<T, invert>;

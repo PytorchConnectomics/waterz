@@ -55,10 +55,10 @@ public:
 				scoreEdge(e, edgeScoringFunction);
 		}
 
-		std::cout << "merging until " << threshold << std::endl;
+		std::cout << "merging until " << (double)threshold << std::endl;
 
 		if (!_edgeQueue.empty())
-			std::cout << "min edge score " << _edgeScores[_edgeQueue.top()] << std::endl;
+			std::cout << "min edge score " << (double)_edgeScores[_edgeQueue.top()] << std::endl;
 
 		// while there are still unhandled edges
 		std::size_t merged = 0;

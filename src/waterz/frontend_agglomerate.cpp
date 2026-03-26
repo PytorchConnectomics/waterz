@@ -117,11 +117,11 @@ initialize(
 std::vector<Merge>
 mergeUntil(
 		WaterzState& state,
-		float        threshold) {
+		ScoreValue   threshold) {
 
 	WaterzContext* context = WaterzContext::get(state.context);
 
-	std::cout << "merging until threshold " << threshold << std::endl;
+	std::cout << "merging until threshold " << (double)threshold << std::endl;
 
 	std::vector<Merge>  mergeHistory;
 	MergeHistoryVisitor mergeHistoryVisitor(mergeHistory);
