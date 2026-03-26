@@ -7,6 +7,7 @@ large-volume pipeline over HDF5 affinity tensors.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -330,6 +331,7 @@ class LargeDecodeRunner:
         )
 
     def handle_decode_chunk(self, record: TaskRecord) -> Dict[str, Any]:
+        os.environ.setdefault("CCACHE_DISABLE", "1")
         chunk = self.chunk_map[record.spec.key]
         affs = self._read_affinity_chunk(chunk)
         seg_results = _run_waterz(

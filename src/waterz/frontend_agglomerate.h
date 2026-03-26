@@ -39,19 +39,19 @@ struct Merge {
 	SegID a;
 	SegID b;
 	SegID c;
-	double score;  // always double for Python interop
+	ScoreValue score;
 };
 
 struct ScoredEdge {
 
-	ScoredEdge(SegID u_, SegID v_, double score_) :
+	ScoredEdge(SegID u_, SegID v_, ScoreValue score_) :
 		u(u_),
 		v(v_),
 		score(score_) {}
 
 	SegID u;
 	SegID v;
-	double score;  // always double for Python interop (Cython reads this)
+	ScoreValue score;
 };
 
 struct WaterzState {
@@ -133,7 +133,7 @@ public:
 
 	void onMerge(SegID a, SegID b, SegID c, ScoreValue score) {
 
-		_history.push_back({a, b, c, (double)score});
+		_history.push_back({a, b, c, score});
 	}
 
 private:

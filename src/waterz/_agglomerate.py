@@ -36,9 +36,14 @@ _PYX_UINT8_PATCHES = [
     # Local pointer declarations
     ("cdef float*    aff_data", "cdef uint8_t*  aff_data"),
     ("cdef float* aff_data", "cdef uint8_t* aff_data"),
-    # C extern function signatures
+    # C extern function signatures (affinities)
     ("const float*    affinity_data", "const uint8_t*  affinity_data"),
     ("const float*            affinity_data", "const uint8_t*          affinity_data"),
+    # Struct score fields + threshold
+    ("float score", "uint8_t score"),
+    ("float           affThresholdLow", "uint8_t         affThresholdLow"),
+    ("float           affThresholdHigh", "uint8_t         affThresholdHigh"),
+    ("float        threshold", "uint8_t      threshold"),
 ]
 
 

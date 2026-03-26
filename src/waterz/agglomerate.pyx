@@ -105,12 +105,12 @@ cdef extern from "frontend_agglomerate.h":
         uint64_t a
         uint64_t b
         uint64_t c
-        double score
+        float score
 
     struct ScoredEdge:
         uint64_t u
         uint64_t v
-        double score
+        float score
 
     struct WaterzState:
         int     context
