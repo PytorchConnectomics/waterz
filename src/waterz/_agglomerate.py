@@ -6,6 +6,7 @@ discretize_queue) combination gets its own cached compiled module via witty.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -46,6 +47,28 @@ _PYX_UINT8_PATCHES = [
     ("float        threshold", "uint8_t      threshold"),
 ]
 
+_SOURCE_KEY_GLOBS = (
+    '_agglomerate.py',
+    'agglomerate.pyx',
+    'frontend_agglomerate.cpp',
+    'frontend_agglomerate.h',
+    'backend/**/*.h',
+    'backend/**/*.hpp',
+    'backend/**/*.cpp',
+)
+
+
+def _source_fingerprint() -> str:
+    """Hash local JIT sources so ABI changes invalidate cached builds."""
+    digest = hashlib.md5()
+    for pattern in _SOURCE_KEY_GLOBS:
+        for path in sorted(HERE.glob(pattern)):
+            if not path.is_file():
+                continue
+            digest.update(str(path.relative_to(HERE)).encode())
+            digest.update(path.read_bytes())
+    return digest.hexdigest()[:12]
+
 
 def _compile_module(
     scoring_function: str,
@@ -58,7 +81,7 @@ def _compile_module(
     Returns the compiled module with ``agglomerate()`` and
     ``buildRegionGraphOnly()`` entry points.
     """
-    import hashlib
+    import os
     import subprocess
     import sys as _sys
 
@@ -68,10 +91,11 @@ def _compile_module(
         raise ValueError(f"Unsupported aff_dtype {aff_dtype}; expected float32 or uint8")
     aff_ctype, score_ctype = _AFF_DTYPE_MAP[aff_dtype]
 
-    # --- Cache key includes dtype ---
+    # Cache keys must reflect source/header ABI, not just runtime parameters.
     cache_dir = witty.get_witty_cache_dir()
+    source_key = _source_fingerprint()
     header_key = hashlib.md5(
-        f"{scoring_function}|{discretize_queue}|{aff_ctype}".encode()
+        f"{scoring_function}|{discretize_queue}|{aff_ctype}|{source_key}".encode()
     ).hexdigest()[:12]
     header_dir = cache_dir / f"_waterz_headers_{header_key}"
     header_dir.mkdir(parents=True, exist_ok=True)
@@ -114,7 +138,9 @@ def _compile_module(
         for d in include_dirs:
             compile_cmd += ["-I", d]
         compile_cmd += [str(frontend_cpp), "-o", str(obj_path)]
-        subprocess.check_call(compile_cmd)
+        env = os.environ.copy()
+        env["CCACHE_DISABLE"] = "1"
+        subprocess.check_call(compile_cmd, env=env)
 
     # Patch .pyx source for uint8 if needed
     pyx_source = (HERE / "agglomerate.pyx").read_text()
