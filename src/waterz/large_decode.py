@@ -94,8 +94,9 @@ class LargeDecodeConfig:
     output_path: Optional[str] = None
     output_dataset: str = "main"
     border_min_overlap: int = 1
-    border_one_sided_threshold: float = 0.9
     border_iou_threshold: float = 0.0
+    border_one_sided_threshold: float = 0.9
+    border_one_sided_min_size: int = 0
     border_affinity_threshold: float = 0.0
     compression: Optional[str] = "gzip"
     compression_level: int = 4
@@ -569,44 +570,16 @@ class LargeDecodeRunner:
         face1: np.ndarray,
         aff: Optional[np.ndarray],
     ) -> np.ndarray:
-        fg = (face0 > 0) & (face1 > 0)
-        if not fg.any():
-            return np.zeros((0, 2), dtype=np.uint64)
+        from .face_merge import face_merge_pairs
 
-        ids0 = face0[fg].astype(np.uint64, copy=False)
-        ids1 = face1[fg].astype(np.uint64, copy=False)
-        pair_ids, inverse, overlap = np.unique(
-            np.stack([ids0, ids1], axis=1),
-            axis=0,
-            return_inverse=True,
-            return_counts=True,
+        return face_merge_pairs(
+            face0, face1, aff,
+            min_overlap=self.config.border_min_overlap,
+            iou_threshold=float(self.config.border_iou_threshold),
+            one_sided_threshold=float(self.config.border_one_sided_threshold),
+            one_sided_min_size=int(self.config.border_one_sided_min_size),
+            affinity_threshold=float(self.config.border_affinity_threshold),
         )
-
-        uniq0, cnt0 = np.unique(face0[face0 > 0], return_counts=True)
-        uniq1, cnt1 = np.unique(face1[face1 > 0], return_counts=True)
-        size0_map = dict(zip(uniq0.tolist(), cnt0.tolist()))
-        size1_map = dict(zip(uniq1.tolist(), cnt1.tolist()))
-        size0 = np.array([size0_map[int(value)] for value in pair_ids[:, 0]], dtype=np.float64)
-        size1 = np.array([size1_map[int(value)] for value in pair_ids[:, 1]], dtype=np.float64)
-        overlap = overlap.astype(np.float64)
-        one_sided = overlap / np.maximum(np.minimum(size0, size1), 1.0)
-        union = np.maximum(size0 + size1 - overlap, 1.0)
-        iou = overlap / union
-
-        keep = overlap >= float(self.config.border_min_overlap)
-        if self.config.border_one_sided_threshold > 0:
-            keep &= one_sided >= float(self.config.border_one_sided_threshold)
-        if self.config.border_iou_threshold > 0:
-            keep &= iou >= float(self.config.border_iou_threshold)
-
-        if aff is not None and self.config.border_affinity_threshold > 0:
-            aff_vals = aff[fg].astype(np.float64, copy=False)
-            aff_sums = np.zeros(len(pair_ids), dtype=np.float64)
-            np.add.at(aff_sums, inverse, aff_vals)
-            mean_aff = aff_sums / overlap
-            keep &= mean_aff >= float(self.config.border_affinity_threshold)
-
-        return np.ascontiguousarray(pair_ids[keep], dtype=np.uint64)
 
     def _build_relabel_array(
         self,

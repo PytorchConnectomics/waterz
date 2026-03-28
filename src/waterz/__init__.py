@@ -18,6 +18,7 @@ from .large_workflow import (
     build_large_decode_tasks,
 )
 from .orchestrator import TaskRecord, TaskSpec, TaskState, WorkflowOrchestrator
+from .face_merge import face_merge_pairs, slice_overlaps
 from .region_graph import merge_id
 from .seg_init import compute_fragments
 
@@ -35,9 +36,11 @@ __all__ = [
     "compute_fragments",
     "decode_large",
     "evaluate",
+    "face_merge_pairs",
     "get_region_graph",
     "merge_dust",
     "merge_id",
     "merge_segments",
+    "slice_overlaps",
     "waterz",
 ]
