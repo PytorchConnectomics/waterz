@@ -16,6 +16,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Union
 import numpy as np
 
 from ._waterz import waterz as _run_waterz
+from .face_merge import face_merge_pairs
 from .large_workflow import BorderRef, ChunkRef, build_border_adjacency, build_chunk_grid, build_large_decode_tasks
 from .orchestrator import TaskRecord, WorkflowOrchestrator
 from .region_graph import merge_id
@@ -93,11 +94,11 @@ class LargeDecodeConfig:
     write_output: bool = False
     output_path: Optional[str] = None
     output_dataset: str = "main"
-    border_min_overlap: int = 1
-    border_iou_threshold: float = 0.0
-    border_one_sided_threshold: float = 0.9
-    border_one_sided_min_size: int = 0
-    border_affinity_threshold: float = 0.0
+    min_overlap: int = 1
+    iou_threshold: float = 0.0
+    one_sided_threshold: float = 0.9
+    one_sided_min_size: int = 0
+    affinity_threshold: float = 0.0
     compression: Optional[str] = "gzip"
     compression_level: int = 4
     force_rebuild: bool = False
@@ -382,7 +383,14 @@ class LargeDecodeRunner:
             dst_face[dst_mask] += dst_offset
 
         aff = self._read_boundary_affinity(border)
-        pairs = self._compute_merge_pairs(src_face, dst_face, aff)
+        pairs = face_merge_pairs(
+            src_face, dst_face, aff,
+            min_overlap=self.config.min_overlap,
+            iou_threshold=float(self.config.iou_threshold),
+            one_sided_threshold=float(self.config.one_sided_threshold),
+            one_sided_min_size=int(self.config.one_sided_min_size),
+            affinity_threshold=float(self.config.affinity_threshold),
+        )
         path = self._connect_path(border.key)
         path.parent.mkdir(parents=True, exist_ok=True)
         np.save(path, pairs)
@@ -563,23 +571,6 @@ class LargeDecodeRunner:
                 return np.array(dataset[:, index, :], dtype=np.uint64)
             index = dataset.shape[2] - 1 if side == "src" else 0
             return np.array(dataset[:, :, index], dtype=np.uint64)
-
-    def _compute_merge_pairs(
-        self,
-        face0: np.ndarray,
-        face1: np.ndarray,
-        aff: Optional[np.ndarray],
-    ) -> np.ndarray:
-        from .face_merge import face_merge_pairs
-
-        return face_merge_pairs(
-            face0, face1, aff,
-            min_overlap=self.config.border_min_overlap,
-            iou_threshold=float(self.config.border_iou_threshold),
-            one_sided_threshold=float(self.config.border_one_sided_threshold),
-            one_sided_min_size=int(self.config.border_one_sided_min_size),
-            affinity_threshold=float(self.config.border_affinity_threshold),
-        )
 
     def _build_relabel_array(
         self,
