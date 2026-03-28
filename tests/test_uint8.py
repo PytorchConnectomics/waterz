@@ -144,6 +144,76 @@ def test_basic_uint8():
     print(f"uint8 smoke test: {len(np.unique(seg))-1} segments")
 
 
+def test_get_region_graph_uint8_returns_normalized_scores():
+    """uint8 region-graph scores should keep float32-style [0,1] semantics."""
+    import waterz
+
+    affs_u8 = _make_test_volume(seed=7)
+    threshold_u8 = 64
+    seg_u8 = waterz.waterz(
+        affs_u8,
+        thresholds=[threshold_u8],
+        scoring_function="OneMinus<HistogramQuantileAffinity<RegionGraphType, 85, ScoreValue, 256>>",
+        aff_threshold_low=1,
+        aff_threshold_high=254,
+    )[0]
+
+    rg_affs, _, _ = waterz.get_region_graph(
+        seg_u8,
+        affs_u8,
+        scoring_function="HistogramQuantileAffinity<RegionGraphType, 85, ScoreValue, 256>",
+    )
+
+    assert rg_affs.dtype == np.float32
+    assert float(rg_affs.min(initial=0.0)) >= 0.0
+    assert float(rg_affs.max(initial=0.0)) <= 1.0 + 1e-6
+
+
+def test_merge_dust_uint8_matches_float32_threshold_semantics():
+    """Dust merge should interpret uint8 affinities with the same thresholds as float32."""
+    import waterz
+
+    affs_u8 = _make_test_volume(seed=11)
+    affs_f32 = _u8_to_f32(affs_u8)
+    threshold_u8 = 64
+    scoring = "OneMinus<HistogramQuantileAffinity<RegionGraphType, 85, ScoreValue, 256>>"
+    dust_scoring = "HistogramQuantileAffinity<RegionGraphType, 85, ScoreValue, 256>"
+
+    seg_u8 = waterz.waterz(
+        affs_u8,
+        thresholds=[threshold_u8],
+        scoring_function=scoring,
+        aff_threshold_low=1,
+        aff_threshold_high=254,
+    )[0]
+    seg_f32 = waterz.waterz(
+        affs_f32,
+        thresholds=[_u8_threshold_to_f32(threshold_u8)],
+        scoring_function=scoring,
+        aff_threshold_low=_u8_threshold_to_f32(1),
+        aff_threshold_high=_u8_threshold_to_f32(254),
+    )[0]
+
+    waterz.merge_dust(
+        seg_u8,
+        affs_u8,
+        size_th=100,
+        weight_th=0.3,
+        dust_th=20,
+        scoring_function=dust_scoring,
+    )
+    waterz.merge_dust(
+        seg_f32,
+        affs_f32,
+        size_th=100,
+        weight_th=0.3,
+        dust_th=20,
+        scoring_function=dust_scoring,
+    )
+
+    assert len(np.unique(seg_u8)) == len(np.unique(seg_f32))
+
+
 if __name__ == "__main__":
     print("Running uint8 vs float32 equivalence tests...\n")
 

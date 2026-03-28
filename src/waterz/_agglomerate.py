@@ -29,6 +29,11 @@ _AFF_DTYPE_MAP = {
     np.dtype("uint8"): ("uint8_t", "uint8_t"),
 }
 
+_SEG_DTYPE_MAP = {
+    np.dtype("uint64"): "uint64_t",
+    np.dtype("uint32"): "uint32_t",
+}
+
 # Cython source patches for uint8 mode.
 # Each (old, new) pair is applied via str.replace.
 _PYX_UINT8_PATCHES = [
@@ -45,6 +50,26 @@ _PYX_UINT8_PATCHES = [
     ("float           affThresholdLow", "uint8_t         affThresholdLow"),
     ("float           affThresholdHigh", "uint8_t         affThresholdHigh"),
     ("float        threshold", "uint8_t      threshold"),
+]
+
+# Cython source patches for uint32 segmentation.
+_PYX_UINT32_SEG_PATCHES = [
+    # Typed array declarations (segmentation / fragments)
+    ("uint64_t, ndim=3]     segmentation", "uint32_t, ndim=3]     segmentation"),
+    ("uint64_t, ndim=3] seg", "uint32_t, ndim=3] seg"),
+    # Local pointer declarations
+    ("cdef uint64_t* segmentation_data", "cdef uint32_t* segmentation_data"),
+    ("cdef uint64_t* seg_data", "cdef uint32_t* seg_data"),
+    # Array creation dtype
+    ("dtype=np.uint64", "dtype=np.uint32"),
+    # C extern: struct fields (Merge, ScoredEdge use SegID = uint32_t)
+    ("        uint64_t a\n        uint64_t b\n        uint64_t c",
+     "        uint32_t a\n        uint32_t b\n        uint32_t c"),
+    ("        uint64_t u\n        uint64_t v",
+     "        uint32_t u\n        uint32_t v"),
+    # C extern: function signatures
+    ("            uint64_t*       segmentation_data,", "            uint32_t*       segmentation_data,"),
+    ("            uint64_t*       segmentation_data)", "            uint32_t*       segmentation_data)"),
 ]
 
 _SOURCE_KEY_GLOBS = (
@@ -74,6 +99,7 @@ def _compile_module(
     scoring_function: str,
     discretize_queue: int = 0,
     aff_dtype: np.dtype = np.dtype("float32"),
+    seg_dtype: np.dtype = np.dtype("uint64"),
     force_rebuild: bool = False,
 ) -> "ModuleType":
     """Compile and cache the agglomerate Cython/C++ module.
@@ -91,14 +117,23 @@ def _compile_module(
         raise ValueError(f"Unsupported aff_dtype {aff_dtype}; expected float32 or uint8")
     aff_ctype, score_ctype = _AFF_DTYPE_MAP[aff_dtype]
 
+    if seg_dtype not in _SEG_DTYPE_MAP:
+        raise ValueError(f"Unsupported seg_dtype {seg_dtype}; expected uint64 or uint32")
+    seg_ctype = _SEG_DTYPE_MAP[seg_dtype]
+
     # Cache keys must reflect source/header ABI, not just runtime parameters.
     cache_dir = witty.get_witty_cache_dir()
     source_key = _source_fingerprint()
     header_key = hashlib.md5(
-        f"{scoring_function}|{discretize_queue}|{aff_ctype}|{source_key}".encode()
+        f"{scoring_function}|{discretize_queue}|{aff_ctype}|{seg_ctype}|{source_key}".encode()
     ).hexdigest()[:12]
     header_dir = cache_dir / f"_waterz_headers_{header_key}"
     header_dir.mkdir(parents=True, exist_ok=True)
+
+    # SegType.h — parameterises SegID (uint64_t or uint32_t)
+    (header_dir / "SegType.h").write_text(
+        f"typedef {seg_ctype} SegID;\n"
+    )
 
     # AffType.h — parameterises AffValue and ScoreValue
     (header_dir / "AffType.h").write_text(
@@ -142,10 +177,13 @@ def _compile_module(
         env["CCACHE_DISABLE"] = "1"
         subprocess.check_call(compile_cmd, env=env)
 
-    # Patch .pyx source for uint8 if needed
+    # Patch .pyx source for uint8 affinities and/or uint32 segmentation
     pyx_source = (HERE / "agglomerate.pyx").read_text()
     if aff_ctype == "uint8_t":
         for old, new in _PYX_UINT8_PATCHES:
+            pyx_source = pyx_source.replace(old, new)
+    if seg_ctype == "uint32_t":
+        for old, new in _PYX_UINT32_SEG_PATCHES:
             pyx_source = pyx_source.replace(old, new)
 
     module = witty.compile_cython(
@@ -177,8 +215,9 @@ def agglomerate(
     return_region_graph: bool = False,
     scoring_function: str = "OneMinus<MeanAffinity<RegionGraphType, ScoreValue>>",
     discretize_queue: int = 0,
+    seg_dtype: np.dtype | str = "uint64",
     force_rebuild: bool = False,
-) -> Iterator[tuple | NDArray[np.uint64]]:
+) -> Iterator[tuple | NDArray]:
     """Compute segmentations from an affinity graph for several thresholds.
 
     Accepts **float32** or **uint8** affinities.  When uint8 is provided,
@@ -215,14 +254,16 @@ def agglomerate(
             f"affs.dtype must be float32 or uint8, got {aff_dtype}"
         )
 
+    seg_dtype = np.dtype(seg_dtype)
+
     if gt is not None:
         gt = np.ascontiguousarray(gt, dtype=np.uint32)
     if fragments is not None:
-        fragments = np.ascontiguousarray(fragments, dtype=np.uint64)
+        fragments = np.ascontiguousarray(fragments, dtype=seg_dtype)
 
     module = _compile_module(
         scoring_function, discretize_queue,
-        aff_dtype=aff_dtype, force_rebuild=force_rebuild,
+        aff_dtype=aff_dtype, seg_dtype=seg_dtype, force_rebuild=force_rebuild,
     )
 
     return module.agglomerate(
@@ -239,14 +280,15 @@ def agglomerate(
 
 def build_region_graph_only(
     affs: NDArray,
-    fragments: NDArray[np.uint64],
+    fragments: NDArray,
     scoring_function: str = "MeanAffinity<RegionGraphType, ScoreValue>",
     discretize_queue: int = 0,
+    seg_dtype: np.dtype | str = "uint64",
     force_rebuild: bool = False,
 ) -> list:
     """Build scored region graph without RegionMerging or priority queue.
 
-    Accepts float32 or uint8 affinities.
+    Accepts float32 or uint8 affinities, uint64 or uint32 segmentation.
 
     Returns list of dicts ``[{"u": id1, "v": id2, "score": float}, ...]``.
     """
@@ -258,11 +300,12 @@ def build_region_graph_only(
     if aff_dtype not in _AFF_DTYPE_MAP:
         raise TypeError(f"affs.dtype must be float32 or uint8, got {aff_dtype}")
 
-    fragments = np.ascontiguousarray(fragments, dtype=np.uint64)
+    seg_dtype = np.dtype(seg_dtype)
+    fragments = np.ascontiguousarray(fragments, dtype=seg_dtype)
 
     module = _compile_module(
         scoring_function, discretize_queue,
-        aff_dtype=aff_dtype, force_rebuild=force_rebuild,
+        aff_dtype=aff_dtype, seg_dtype=seg_dtype, force_rebuild=force_rebuild,
     )
 
     return module.buildRegionGraphOnly(affs, fragments)

@@ -13,13 +13,14 @@
 #include "backend/VectorQuantileProvider.hpp"
 #include "evaluate.hpp"
 
-typedef uint64_t SegID;
 typedef uint32_t GtID;
-typedef RegionGraph<SegID> RegionGraphType;
 
-// AffValue, ScoreValue, ScoringFunctionType, QueueType
+// AffValue, ScoreValue, SegID, ScoringFunctionType, QueueType
 // are defined in the JIT-generated headers below.
+#include <SegType.h>
 #include <AffType.h>
+
+typedef RegionGraph<SegID> RegionGraphType;
 #include <ScoringFunction.h>
 #include <Queue.h>
 

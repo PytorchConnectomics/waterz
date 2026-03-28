@@ -26,6 +26,16 @@ __all__ = [
 ]
 
 
+def _prepare_affinities(affs: np.ndarray) -> np.ndarray:
+    """Preserve float32/uint8 affinity semantics for region-graph scoring."""
+    affs = np.ascontiguousarray(affs)
+    if affs.dtype == np.float64:
+        affs = affs.astype(np.float32)
+    if affs.dtype not in (np.dtype("float32"), np.dtype("uint8")):
+        raise TypeError(f"affs.dtype must be float32 or uint8, got {affs.dtype}")
+    return affs
+
+
 def _mask_channels(affs: np.ndarray, channels: str) -> np.ndarray:
     """Zero out affinity channels not in the selection.
 
@@ -49,7 +59,7 @@ def _mask_channels(affs: np.ndarray, channels: str) -> np.ndarray:
 
 def get_region_graph(
     seg: NDArray[np.uint64],
-    affs: NDArray[np.float32],
+    affs: NDArray,
     scoring_function: str = "MeanAffinity<RegionGraphType, ScoreValue>",
     channels: str = "all",
 ) -> Tuple[NDArray[np.float32], NDArray[np.uint64], NDArray[np.uint64]]:
@@ -62,7 +72,7 @@ def get_region_graph(
     ----------
     seg : ndarray, uint64, shape ``(Z, Y, X)``
         Segmentation (0 = background).
-    affs : ndarray, float32, shape ``(3, Z, Y, X)``
+    affs : ndarray, float32 or uint8, shape ``(3, Z, Y, X)``
         Affinities in z, y, x channel order.
     scoring_function : str
         C++ scoring function type string.  Common options:
@@ -91,8 +101,9 @@ def get_region_graph(
     from ._agglomerate import build_region_graph_only
 
     seg = np.ascontiguousarray(seg, dtype=np.uint64)
-    affs = np.ascontiguousarray(affs, dtype=np.float32)
+    affs = _prepare_affinities(affs)
     affs = _mask_channels(affs, channels)
+    aff_dtype = affs.dtype
 
     rg_list = build_region_graph_only(affs, seg, scoring_function=scoring_function)
 
@@ -102,6 +113,8 @@ def get_region_graph(
         return empty_f, empty_id, empty_id
 
     rg_affs = np.array([e["score"] for e in rg_list], dtype=np.float32)
+    if aff_dtype == np.uint8:
+        rg_affs /= 255.0
     id1 = np.array([e["u"] for e in rg_list], dtype=np.uint64)
     id2 = np.array([e["v"] for e in rg_list], dtype=np.uint64)
 
@@ -151,7 +164,7 @@ def merge_segments(
 
 def merge_dust(
     seg: NDArray[np.uint64],
-    affs: NDArray[np.float32],
+    affs: NDArray,
     size_th: int,
     weight_th: float = 0.0,
     dust_th: int = 0,
@@ -164,7 +177,7 @@ def merge_dust(
     ----------
     seg : ndarray, uint64, shape ``(Z, Y, X)``
         Segmentation (0 = background).  Modified in-place.
-    affs : ndarray, float32, shape ``(3, Z, Y, X)``
+    affs : ndarray, float32 or uint8, shape ``(3, Z, Y, X)``
         Affinities in z, y, x channel order.
     size_th : int
         Merge if at least one segment has fewer voxels than this.
@@ -183,7 +196,7 @@ def merge_dust(
         Cleaned segmentation (same array, modified in-place).
     """
     seg = np.ascontiguousarray(seg, dtype=np.uint64)
-    affs = np.ascontiguousarray(affs, dtype=np.float32)
+    affs = _prepare_affinities(affs)
 
     rg_affs, id1, id2 = get_region_graph(
         seg, affs, scoring_function=scoring_function, channels=channels

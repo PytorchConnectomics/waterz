@@ -19,6 +19,7 @@ from .large_workflow import (
 )
 from .orchestrator import TaskRecord, TaskSpec, TaskState, WorkflowOrchestrator
 from .region_graph import merge_id
+from .seg_init import compute_fragments
 
 __all__ = [
     "LargeDecodeConfig",
@@ -31,6 +32,7 @@ __all__ = [
     "build_border_adjacency",
     "build_chunk_grid",
     "build_large_decode_tasks",
+    "compute_fragments",
     "decode_large",
     "evaluate",
     "get_region_graph",

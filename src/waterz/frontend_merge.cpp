@@ -72,7 +72,7 @@ std::size_t merge_segments(
     }
 
     std::size_t n_segs = static_cast<std::size_t>(next_id - 1);
-    std::cout << "merge_segments: merged " << merge_count
+    std::cout << "dust_merge: merged " << merge_count
               << " edges, " << n_segs << " segments remain" << std::endl;
 
     return n_segs;
