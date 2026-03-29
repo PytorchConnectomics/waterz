@@ -15,6 +15,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
+from ._merge import merge_function_to_scoring
 from ._waterz import waterz as _run_waterz
 from .face_merge import face_merge_pairs
 from .large_workflow import BorderRef, ChunkRef, build_border_adjacency, build_chunk_grid, build_large_decode_tasks
@@ -26,33 +27,6 @@ __all__ = [
     "LargeDecodeRunner",
     "decode_large",
 ]
-
-
-def _merge_function_to_scoring(shorthand: str) -> str:
-    parts = {tok[:3]: tok[3:] for tok in shorthand.split("_")}
-    use_255 = parts.get("ran") == "255"
-    wrapper = "One255Minus" if use_255 else "OneMinus"
-
-    if "aff" in parts:
-        quantile = parts["aff"]
-        his_bins = parts.get("his", "0")
-        if his_bins and his_bins != "0":
-            inner = f"HistogramQuantileAffinity<RegionGraphType, {quantile}, ScoreValue, {his_bins}>"
-        else:
-            inner = f"QuantileAffinity<RegionGraphType, {quantile}, ScoreValue>"
-        return f"{wrapper}<{inner}>"
-
-    if "max" in parts:
-        inner = f"MeanMaxKAffinity<RegionGraphType, {parts['max']}, ScoreValue>"
-        return f"{wrapper}<{inner}>"
-
-    if "<" in shorthand:
-        return shorthand
-
-    raise ValueError(
-        f"Unknown merge_function shorthand: {shorthand!r}. "
-        "Expected values like 'aff50_his256', 'aff85_his256', or 'max10'."
-    )
 
 
 def _safe_name(name: str) -> str:
@@ -119,7 +93,7 @@ class LargeDecodeConfig:
 
     @property
     def scoring_function(self) -> str:
-        return _merge_function_to_scoring(self.merge_function)
+        return merge_function_to_scoring(self.merge_function)
 
     @property
     def resolved_output_path(self) -> Path:
@@ -159,10 +133,11 @@ class LargeDecodeConfig:
             write_output=bool(data.get("write_output", False)),
             output_path=data.get("output_path"),
             output_dataset=str(data.get("output_dataset", "main")),
-            border_min_overlap=int(data.get("border_min_overlap", 1)),
-            border_one_sided_threshold=float(data.get("border_one_sided_threshold", 0.9)),
-            border_iou_threshold=float(data.get("border_iou_threshold", 0.0)),
-            border_affinity_threshold=float(data.get("border_affinity_threshold", 0.0)),
+            min_overlap=int(data.get("min_overlap", data.get("border_min_overlap", 1))),
+            iou_threshold=float(data.get("iou_threshold", data.get("border_iou_threshold", 0.0))),
+            one_sided_threshold=float(data.get("one_sided_threshold", data.get("border_one_sided_threshold", 0.9))),
+            one_sided_min_size=int(data.get("one_sided_min_size", data.get("border_one_sided_min_size", 0))),
+            affinity_threshold=float(data.get("affinity_threshold", data.get("border_affinity_threshold", 0.0))),
             compression=data.get("compression", "gzip"),
             compression_level=int(data.get("compression_level", 4)),
             force_rebuild=bool(data.get("force_rebuild", False)),
@@ -196,10 +171,11 @@ class LargeDecodeRunner:
         write_output: bool = False,
         output_path: Optional[str] = None,
         output_dataset: str = "main",
-        border_min_overlap: int = 1,
-        border_one_sided_threshold: float = 0.9,
-        border_iou_threshold: float = 0.0,
-        border_affinity_threshold: float = 0.0,
+        min_overlap: int = 1,
+        iou_threshold: float = 0.0,
+        one_sided_threshold: float = 0.9,
+        one_sided_min_size: int = 0,
+        affinity_threshold: float = 0.0,
         compression: Optional[str] = "gzip",
         compression_level: int = 4,
         force_rebuild: bool = False,
@@ -217,10 +193,11 @@ class LargeDecodeRunner:
             write_output=bool(write_output),
             output_path=str(output_path) if output_path is not None else None,
             output_dataset=str(output_dataset),
-            border_min_overlap=int(border_min_overlap),
-            border_one_sided_threshold=float(border_one_sided_threshold),
-            border_iou_threshold=float(border_iou_threshold),
-            border_affinity_threshold=float(border_affinity_threshold),
+            min_overlap=int(min_overlap),
+            iou_threshold=float(iou_threshold),
+            one_sided_threshold=float(one_sided_threshold),
+            one_sided_min_size=int(one_sided_min_size),
+            affinity_threshold=float(affinity_threshold),
             compression=compression,
             compression_level=int(compression_level),
             force_rebuild=bool(force_rebuild),

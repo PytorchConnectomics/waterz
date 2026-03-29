@@ -8,11 +8,14 @@ Uses mahotas.cwatershed (fast C implementation, float input).
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import mahotas
 import numpy as np
 from tqdm import tqdm
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from numpy.typing import NDArray
@@ -128,7 +131,7 @@ def compute_fragments(
     fragments = np.zeros(affs.shape[1:], dtype=np.uint64)
     next_id = 1
 
-    print(f"compute_fragments: {nz} slices, seed_method={seed_method}, aff_threshold_low={aff_threshold_low}")
+    logger.info("compute_fragments: %d slices, seed_method=%s, aff_threshold_low=%s", nz, seed_method, aff_threshold_low)
     for z in tqdm(range(nz), desc="compute_fragments"):
         xy_z = affs[1:3, z].astype(np.float64)
         if is_uint8:

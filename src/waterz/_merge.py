@@ -20,10 +20,59 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
 
 __all__ = [
+    "dust_merge_from_region_graph",
     "get_region_graph",
+    "merge_function_to_scoring",
     "merge_segments",
     "merge_dust",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Shorthand -> C++ scoring function conversion
+# ---------------------------------------------------------------------------
+
+_RG = "RegionGraphType"
+_SV = "ScoreValue"
+
+
+def merge_function_to_scoring(shorthand: str) -> str:
+    """Convert a shorthand merge function name to a C++ scoring type string.
+
+    Supported shorthands (examples)::
+
+        aff50_his256  -> OneMinus<HistogramQuantileAffinity<RG, 50, SV, 256>>
+        aff85_his256  -> OneMinus<HistogramQuantileAffinity<RG, 85, SV, 256>>
+        aff50_his0    -> OneMinus<QuantileAffinity<RG, 50, SV>>
+        max10         -> OneMinus<MeanMaxKAffinity<RG, 10, SV>>
+        *_ran255      -> One255Minus<...> instead of OneMinus<...>
+    """
+    parts = {tok[:3]: tok[3:] for tok in shorthand.split("_")}
+    use_255 = parts.get("ran") == "255"
+    wrapper = "One255Minus" if use_255 else "OneMinus"
+
+    if "aff" in parts:
+        quantile = parts["aff"]
+        his_bins = parts.get("his", "0")
+        if his_bins and his_bins != "0":
+            inner = f"HistogramQuantileAffinity<{_RG}, {quantile}, {_SV}, {his_bins}>"
+        else:
+            inner = f"QuantileAffinity<{_RG}, {quantile}, {_SV}>"
+        return f"{wrapper}<{inner}>"
+
+    if "max" in parts:
+        k = parts["max"]
+        inner = f"MeanMaxKAffinity<{_RG}, {k}, {_SV}>"
+        return f"{wrapper}<{inner}>"
+
+    # If it already looks like a C++ type string, pass through
+    if "<" in shorthand:
+        return shorthand
+
+    raise ValueError(
+        f"Unknown merge_function shorthand: {shorthand!r}. "
+        "Expected format like 'aff50_his256', 'aff85_his256', 'max10', etc."
+    )
 
 
 def _prepare_affinities(affs: np.ndarray) -> np.ndarray:
@@ -85,8 +134,8 @@ def get_region_graph(
         Note: do NOT wrap with ``OneMinus<...>`` — ``merge_segments``
         expects raw affinities sorted descending (high = strong connection).
 
-        Use ``connectomics.decoding.decoders.waterz._merge_function_to_scoring()``
-        to convert shorthands like ``"aff85_his256"``.
+        Use :func:`waterz.merge_function_to_scoring` to convert shorthands
+        like ``"aff85_his256"``.
     channels : str
         Which affinity directions to include: ``"all"`` (default),
         ``"z"`` (z-only), or ``"xy"`` (xy-only).
@@ -209,3 +258,73 @@ def merge_dust(
 
     _c_merge(seg, rg_affs, id1, id2, counts, size_th, weight_th, dust_th)
     return seg
+
+
+def _build_segment_counts(seg: np.ndarray) -> np.ndarray:
+    """Build a dense counts array indexed by segment id."""
+    ids, cnts = np.unique(seg, return_counts=True)
+    max_id = int(ids.max()) if len(ids) else 0
+    counts = np.zeros(max_id + 1, dtype=np.uint64)
+    counts[ids] = cnts
+    return counts
+
+
+def dust_merge_from_region_graph(
+    seg: np.ndarray,
+    region_graph: list,
+    *,
+    is_uint8: bool = False,
+    size_th: int,
+    weight_th: float = 0.0,
+    dust_th: int = 0,
+) -> None:
+    """Invert OneMinus/One255Minus scores and merge dust segments.
+
+    Extracts edges from a waterz region graph (list of dicts with
+    ``"u"``, ``"v"``, ``"score"`` keys), inverts the OneMinus or
+    One255Minus scoring back to raw affinities, sorts descending,
+    builds segment counts, and calls :func:`merge_segments`.
+
+    Modifies *seg* in-place.
+
+    Parameters
+    ----------
+    seg : ndarray, uint64, shape ``(Z, Y, X)``
+        Segmentation to clean.  Modified in-place.
+    region_graph : list[dict]
+        Region graph edges as returned by ``waterz.waterz()`` with
+        ``return_region_graph=True``.  Each dict has keys
+        ``"u"``, ``"v"``, ``"score"``.
+    is_uint8 : bool
+        If True, scores are in [0, 255] range (One255Minus) instead
+        of [0, 1] (OneMinus).
+    size_th : int
+        Merge if at least one segment has fewer voxels than this.
+    weight_th : float
+        Minimum affinity for an edge to be merge-eligible.
+    dust_th : int
+        Remove segments smaller than this after merging.
+    """
+    seg = np.ascontiguousarray(seg, dtype=np.uint64)
+    n_edges = len(region_graph)
+    rg_affs = np.empty(n_edges, dtype=np.float32)
+    id1 = np.empty(n_edges, dtype=np.uint64)
+    id2 = np.empty(n_edges, dtype=np.uint64)
+    score_max = 255.0 if is_uint8 else 1.0
+    for idx, edge in enumerate(region_graph):
+        rg_affs[idx] = score_max - float(edge["score"])
+        id1[idx] = int(edge["u"])
+        id2[idx] = int(edge["v"])
+    if n_edges:
+        np.clip(rg_affs, 0.0, score_max, out=rg_affs)
+        order = np.argsort(rg_affs)[::-1]
+        rg_affs = np.ascontiguousarray(rg_affs[order])
+        id1 = np.ascontiguousarray(id1[order])
+        id2 = np.ascontiguousarray(id2[order])
+    counts = _build_segment_counts(seg)
+    merge_segments(
+        seg, rg_affs, id1, id2, counts,
+        size_th=size_th,
+        weight_th=weight_th,
+        dust_th=dust_th,
+    )
