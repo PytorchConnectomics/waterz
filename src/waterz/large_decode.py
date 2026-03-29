@@ -66,6 +66,13 @@ class LargeDecodeConfig:
     aff_threshold_low: float = 0.0001
     aff_threshold_high: float = 0.9999
     channel_order: str = "zyx"
+    border_threshold: float = 0.0
+    compute_fragments: bool = False
+    seed_method: str = "maxima_distance"
+    dust_merge: bool = True
+    dust_merge_size: int = 0
+    dust_merge_affinity: float = 0.0
+    dust_remove_size: int = 0
     write_output: bool = False
     output_path: Optional[str] = None
     output_dataset: str = "main"
@@ -134,6 +141,13 @@ class LargeDecodeConfig:
             aff_threshold_low=float(data.get("aff_threshold_low", 0.0001)),
             aff_threshold_high=float(data.get("aff_threshold_high", 0.9999)),
             channel_order=str(data.get("channel_order", "zyx")),
+            border_threshold=float(data.get("border_threshold", 0.0)),
+            compute_fragments=bool(data.get("compute_fragments", False)),
+            seed_method=str(data.get("seed_method", "maxima_distance")),
+            dust_merge=bool(data.get("dust_merge", True)),
+            dust_merge_size=int(data.get("dust_merge_size", 0)),
+            dust_merge_affinity=float(data.get("dust_merge_affinity", 0.0)),
+            dust_remove_size=int(data.get("dust_remove_size", 0)),
             write_output=bool(data.get("write_output", False)),
             output_path=data.get("output_path"),
             output_dataset=str(data.get("output_dataset", "main")),
@@ -351,15 +365,48 @@ class LargeDecodeRunner:
         os.environ.setdefault("CCACHE_DISABLE", "1")
         chunk = self.chunk_map[record.spec.key]
         affs = self._read_affinity_chunk(chunk)
-        seg_results = _run_waterz(
-            affs,
+
+        waterz_kwargs = dict(
             thresholds=self.config.thresholds,
             aff_threshold_low=self.config.aff_threshold_low,
             aff_threshold_high=self.config.aff_threshold_high,
             scoring_function=self.config.scoring_function,
             force_rebuild=self.config.force_rebuild,
         )
-        seg = np.asarray(seg_results[-1], dtype=np.uint64)
+        if self.config.compute_fragments:
+            waterz_kwargs["compute_fragments"] = True
+            waterz_kwargs["seed_method"] = self.config.seed_method
+
+        do_dust = self.config.dust_merge and self.config.dust_merge_size > 0
+        waterz_kwargs["return_region_graph"] = do_dust
+
+        seg_results = _run_waterz(affs, **waterz_kwargs)
+        if do_dust:
+            seg, region_graph = seg_results[-1]
+        else:
+            seg = seg_results[-1]
+
+        seg = np.asarray(seg, dtype=np.uint64)
+
+        # Strip weak-boundary voxels
+        if self.config.border_threshold > 0:
+            from .face_merge import slice_overlaps  # noqa: F401 (side-effect-free)
+            xy_mean = affs[1:3].astype(np.float32, copy=False).mean(axis=0)
+            if affs.dtype == np.uint8:
+                xy_mean /= 255.0
+            seg[xy_mean < self.config.border_threshold] = 0
+
+        # Dust merge using agglomeration's region graph
+        if do_dust:
+            from ._merge import dust_merge_from_region_graph
+            dust_merge_from_region_graph(
+                seg, region_graph,
+                is_uint8=(affs.dtype == np.uint8),
+                size_th=self.config.dust_merge_size,
+                weight_th=self.config.dust_merge_affinity,
+                dust_th=self.config.dust_remove_size,
+            )
+
         path = self._raw_chunk_path(chunk.key)
         self._write_chunk_seg(path, seg)
         return {"chunk_path": str(path), "max_id": int(seg.max())}
