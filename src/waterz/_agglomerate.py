@@ -309,3 +309,36 @@ def build_region_graph_only(
     )
 
     return module.buildRegionGraphOnly(affs, fragments)
+
+
+def build_region_graph_rich(
+    affs: NDArray,
+    fragments: NDArray,
+    scoring_function: str = "MeanAffinity<RegionGraphType, ScoreValue>",
+    discretize_queue: int = 0,
+    seg_dtype: np.dtype | str = "uint64",
+    force_rebuild: bool = False,
+) -> list:
+    """Build scored region graph with contact area per edge.
+
+    Accepts float32 or uint8 affinities, uint64 or uint32 segmentation.
+
+    Returns list of dicts ``[{"u": id1, "v": id2, "score": float, "contact_area": int}, ...]``.
+    """
+    affs = np.ascontiguousarray(affs)
+    aff_dtype = affs.dtype
+    if aff_dtype == np.float64:
+        affs = affs.astype(np.float32)
+        aff_dtype = np.dtype("float32")
+    if aff_dtype not in _AFF_DTYPE_MAP:
+        raise TypeError(f"affs.dtype must be float32 or uint8, got {aff_dtype}")
+
+    seg_dtype = np.dtype(seg_dtype)
+    fragments = np.ascontiguousarray(fragments, dtype=seg_dtype)
+
+    module = _compile_module(
+        scoring_function, discretize_queue,
+        aff_dtype=aff_dtype, seg_dtype=seg_dtype, force_rebuild=force_rebuild,
+    )
+
+    return module.buildRegionGraphRich(affs, fragments)

@@ -55,6 +55,20 @@ struct ScoredEdge {
 	ScoreValue score;
 };
 
+struct RichScoredEdge {
+
+	RichScoredEdge(SegID u_, SegID v_, ScoreValue score_, uint64_t contact_area_) :
+		u(u_),
+		v(v_),
+		score(score_),
+		contact_area(contact_area_) {}
+
+	SegID u;
+	SegID v;
+	ScoreValue score;
+	uint64_t contact_area;
+};
+
 struct WaterzState {
 
 	int     context;
@@ -166,6 +180,17 @@ std::vector<ScoredEdge> getRegionGraph(WaterzState& state);
  * scored edge list is needed.
  */
 std::vector<ScoredEdge> buildRegionGraphOnly(
+		std::size_t     width,
+		std::size_t     height,
+		std::size_t     depth,
+		const AffValue* affinity_data,
+		SegID*          segmentation_data);
+
+/**
+ * Like buildRegionGraphOnly but also returns per-edge contact area
+ * (number of affinity samples contributing to the edge score).
+ */
+std::vector<RichScoredEdge> buildRegionGraphRich(
 		std::size_t     width,
 		std::size_t     height,
 		std::size_t     depth,

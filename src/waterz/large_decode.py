@@ -485,9 +485,6 @@ class LargeDecodeRunner:
         seg = compute_fragments(
             affs,
             aff_threshold_low=self.config.aff_threshold_low,
-            aff_threshold_high=self.config.aff_threshold_high,
-            scoring_function=self.config.scoring_function,
-            force_rebuild=self.config.force_rebuild,
         )
         path = self._raw_chunk_path(chunk_key)
         self._write_chunk_seg(path, seg)

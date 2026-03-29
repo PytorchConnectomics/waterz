@@ -112,6 +112,12 @@ cdef extern from "frontend_agglomerate.h":
         uint64_t v
         float score
 
+    struct RichScoredEdge:
+        uint64_t u
+        uint64_t v
+        float score
+        uint64_t contact_area
+
     struct WaterzState:
         int     context
         Metrics metrics
@@ -134,6 +140,13 @@ cdef extern from "frontend_agglomerate.h":
     vector[ScoredEdge] getRegionGraph(WaterzState& state)
 
     vector[ScoredEdge] c_buildRegionGraphOnly "buildRegionGraphOnly" (
+            size_t          width,
+            size_t          height,
+            size_t          depth,
+            const float*    affinity_data,
+            uint64_t*       segmentation_data)
+
+    vector[RichScoredEdge] c_buildRegionGraphRich "buildRegionGraphRich" (
             size_t          width,
             size_t          height,
             size_t          depth,
@@ -168,5 +181,35 @@ def buildRegionGraphOnly(
             'u': edges[i].u,
             'v': edges[i].v,
             'score': edges[i].score,
+        })
+    return result
+
+
+def buildRegionGraphRich(
+        np.ndarray[np.float32_t, ndim=4] affs,
+        np.ndarray[uint64_t, ndim=3] seg):
+    """Build scored region graph with contact area per edge."""
+    if not affs.flags['C_CONTIGUOUS']:
+        affs = np.ascontiguousarray(affs)
+    if not seg.flags['C_CONTIGUOUS']:
+        seg = np.ascontiguousarray(seg)
+
+    cdef size_t width = affs.shape[1]
+    cdef size_t height = affs.shape[2]
+    cdef size_t depth = affs.shape[3]
+    cdef float* aff_data = &affs[0,0,0,0]
+    cdef uint64_t* seg_data = &seg[0,0,0]
+
+    cdef vector[RichScoredEdge] edges = c_buildRegionGraphRich(
+        width, height, depth, aff_data, seg_data)
+
+    result = []
+    cdef size_t i
+    for i in range(edges.size()):
+        result.append({
+            'u': edges[i].u,
+            'v': edges[i].v,
+            'score': edges[i].score,
+            'contact_area': edges[i].contact_area,
         })
     return result

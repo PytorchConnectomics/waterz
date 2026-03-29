@@ -22,7 +22,9 @@ if TYPE_CHECKING:
 __all__ = [
     "dust_merge_from_region_graph",
     "get_region_graph",
+    "get_region_graph_rich",
     "merge_function_to_scoring",
+    "merge_region_graphs",
     "merge_segments",
     "merge_dust",
     "strip_boundary",
@@ -228,6 +230,139 @@ def get_region_graph(
 
     order = np.argsort(-rg_affs)
     return rg_affs[order], id1[order], id2[order]
+
+
+def get_region_graph_rich(
+    seg: NDArray[np.uint64],
+    affs: NDArray,
+    scoring_function: str = "MeanAffinity<RegionGraphType, ScoreValue>",
+    channels: str = "all",
+) -> Tuple[NDArray[np.float32], NDArray[np.uint64], NDArray[np.uint64], NDArray[np.uint64]]:
+    """Build region graph with contact area using waterz's JIT-compiled scoring.
+
+    Like :func:`get_region_graph` but also returns per-edge contact area
+    (number of affinity samples contributing to each edge score).
+
+    Parameters
+    ----------
+    seg : ndarray, uint64, shape ``(Z, Y, X)``
+        Segmentation (0 = background).
+    affs : ndarray, float32 or uint8, shape ``(3, Z, Y, X)``
+        Affinities in z, y, x channel order.
+    scoring_function : str
+        C++ scoring function type string (raw, not OneMinus-wrapped).
+    channels : str
+        Which affinity directions: ``"all"``, ``"z"``, or ``"xy"``.
+
+    Returns
+    -------
+    rg_affs : ndarray, float32, shape ``(E,)``
+        Scored affinity per edge, sorted descending.
+    id1, id2 : ndarray, uint64, shape ``(E,)``
+        Edge endpoints.
+    contact_areas : ndarray, uint64, shape ``(E,)``
+        Number of affinity samples per edge.
+    """
+    from ._agglomerate import build_region_graph_rich
+
+    seg = np.ascontiguousarray(seg, dtype=np.uint64)
+    affs = _prepare_affinities(affs)
+    affs = _mask_channels(affs, channels)
+    aff_dtype = affs.dtype
+
+    rg_list = build_region_graph_rich(affs, seg, scoring_function=scoring_function)
+
+    if rg_list is None or len(rg_list) == 0:
+        empty_f = np.empty(0, dtype=np.float32)
+        empty_id = np.empty(0, dtype=np.uint64)
+        return empty_f, empty_id, empty_id, empty_id.copy()
+
+    rg_affs = np.array([e["score"] for e in rg_list], dtype=np.float32)
+    if aff_dtype == np.uint8:
+        rg_affs /= 255.0
+    id1 = np.array([e["u"] for e in rg_list], dtype=np.uint64)
+    id2 = np.array([e["v"] for e in rg_list], dtype=np.uint64)
+    contact_areas = np.array([e["contact_area"] for e in rg_list], dtype=np.uint64)
+
+    order = np.argsort(-rg_affs)
+    return rg_affs[order], id1[order], id2[order], contact_areas[order]
+
+
+def merge_region_graphs(
+    rg_list: list[Tuple[NDArray, NDArray, NDArray, NDArray]],
+) -> Tuple[NDArray[np.float32], NDArray[np.uint64], NDArray[np.uint64], NDArray[np.uint64]]:
+    """Merge multiple region graphs via weighted-mean scoring by contact area.
+
+    Parameters
+    ----------
+    rg_list : list of (rg_affs, id1, id2, contact_areas) tuples
+        Each tuple is as returned by :func:`get_region_graph_rich`.
+
+    Returns
+    -------
+    rg_affs : ndarray, float32, shape ``(E,)``
+        Merged scored affinities, sorted descending.
+    id1, id2 : ndarray, uint64, shape ``(E,)``
+        Edge endpoints.
+    contact_areas : ndarray, uint64, shape ``(E,)``
+        Merged contact areas.
+    """
+    if not rg_list:
+        empty_f = np.empty(0, dtype=np.float32)
+        empty_id = np.empty(0, dtype=np.uint64)
+        return empty_f, empty_id, empty_id, empty_id.copy()
+
+    # Concatenate all edges
+    all_affs = np.concatenate([rg[0] for rg in rg_list])
+    all_id1 = np.concatenate([rg[1] for rg in rg_list])
+    all_id2 = np.concatenate([rg[2] for rg in rg_list])
+    all_areas = np.concatenate([rg[3] for rg in rg_list])
+
+    if len(all_affs) == 0:
+        empty_f = np.empty(0, dtype=np.float32)
+        empty_id = np.empty(0, dtype=np.uint64)
+        return empty_f, empty_id, empty_id, empty_id.copy()
+
+    # Canonicalize keys: (min(u,v), max(u,v))
+    lo = np.minimum(all_id1, all_id2)
+    hi = np.maximum(all_id1, all_id2)
+
+    # Pack (lo, hi) into a structured array for grouping
+    keys = np.empty(len(lo), dtype=[("lo", np.uint64), ("hi", np.uint64)])
+    keys["lo"] = lo
+    keys["hi"] = hi
+
+    _, inverse, counts = np.unique(keys, return_inverse=True, return_counts=True)
+    n_unique = len(counts)
+
+    # Weighted sum: sum(score_i * area_i) and sum(area_i)
+    weighted_sum = np.zeros(n_unique, dtype=np.float64)
+    area_sum = np.zeros(n_unique, dtype=np.uint64)
+
+    np.add.at(weighted_sum, inverse, all_affs.astype(np.float64) * all_areas.astype(np.float64))
+    np.add.at(area_sum, inverse, all_areas)
+
+    # Weighted mean
+    safe_area = np.maximum(area_sum.astype(np.float64), 1.0)
+    merged_affs = (weighted_sum / safe_area).astype(np.float32)
+
+    # Extract canonical id pairs (take the first occurrence per unique key)
+    merged_id1 = np.empty(n_unique, dtype=np.uint64)
+    merged_id2 = np.empty(n_unique, dtype=np.uint64)
+    # Use the first occurrence for each unique key
+    first_idx = np.empty(n_unique, dtype=np.intp)
+    seen = np.zeros(n_unique, dtype=np.bool_)
+    for i in range(len(inverse)):
+        g = inverse[i]
+        if not seen[g]:
+            first_idx[g] = i
+            seen[g] = True
+    merged_id1[:] = lo[first_idx]
+    merged_id2[:] = hi[first_idx]
+
+    # Sort descending by score
+    order = np.argsort(-merged_affs)
+    return merged_affs[order], merged_id1[order], merged_id2[order], area_sum[order]
 
 
 def merge_segments(
