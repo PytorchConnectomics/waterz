@@ -15,11 +15,12 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
-from ._merge import merge_function_to_scoring
+from ._merge import merge_function_to_scoring, merge_region_graphs, merge_segments
 from ._waterz import waterz as _run_waterz
 from .face_merge import face_merge_pairs
-from .large_workflow import BorderRef, ChunkRef, build_border_adjacency, build_chunk_grid, build_large_decode_tasks
+from .large_workflow import BorderRef, ChunkRef, build_border_adjacency, build_chunk_grid, build_chunk_grid_overlap, build_large_decode_tasks, build_large_decode_tasks_overlap
 from .orchestrator import TaskRecord, WorkflowOrchestrator
+from .overlap_stitch import apply_overlap_remap, build_overlap_remap
 from .region_graph import merge_id
 
 __all__ = [
@@ -73,6 +74,7 @@ class LargeDecodeConfig:
     one_sided_threshold: float = 0.9
     one_sided_min_size: int = 0
     affinity_threshold: float = 0.0
+    overlap: tuple[int, int, int] = (0, 0, 0)
     compression: Optional[str] = "gzip"
     compression_level: int = 4
     force_rebuild: bool = False
@@ -82,6 +84,7 @@ class LargeDecodeConfig:
         self.affinity_path = str(Path(self.affinity_path))
         self.workflow_root = str(Path(self.workflow_root))
         self.chunk_shape = tuple(int(v) for v in self.chunk_shape)
+        self.overlap = tuple(int(v) for v in self.overlap)
         self.thresholds = _normalize_thresholds(self.thresholds)
         self.channel_order = str(self.channel_order).lower()
         if self.channel_order not in {"zyx", "xyz"}:
@@ -110,6 +113,7 @@ class LargeDecodeConfig:
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         data["chunk_shape"] = list(self.chunk_shape)
+        data["overlap"] = list(self.overlap)
         data["thresholds"] = list(self.thresholds)
         if self.volume_shape is not None:
             data["volume_shape"] = list(self.volume_shape)
@@ -138,6 +142,7 @@ class LargeDecodeConfig:
             one_sided_threshold=float(data.get("one_sided_threshold", data.get("border_one_sided_threshold", 0.9))),
             one_sided_min_size=int(data.get("one_sided_min_size", data.get("border_one_sided_min_size", 0))),
             affinity_threshold=float(data.get("affinity_threshold", data.get("border_affinity_threshold", 0.0))),
+            overlap=tuple(int(v) for v in data.get("overlap", (0, 0, 0))),
             compression=data.get("compression", "gzip"),
             compression_level=int(data.get("compression_level", 4)),
             force_rebuild=bool(data.get("force_rebuild", False)),
@@ -176,6 +181,7 @@ class LargeDecodeRunner:
         one_sided_threshold: float = 0.9,
         one_sided_min_size: int = 0,
         affinity_threshold: float = 0.0,
+        overlap: Sequence[int] = (0, 0, 0),
         compression: Optional[str] = "gzip",
         compression_level: int = 4,
         force_rebuild: bool = False,
@@ -198,6 +204,7 @@ class LargeDecodeRunner:
             one_sided_threshold=float(one_sided_threshold),
             one_sided_min_size=int(one_sided_min_size),
             affinity_threshold=float(affinity_threshold),
+            overlap=tuple(int(v) for v in overlap),
             compression=compression,
             compression_level=int(compression_level),
             force_rebuild=bool(force_rebuild),
@@ -214,14 +221,31 @@ class LargeDecodeRunner:
         return cls(config)
 
     @property
+    def _use_overlap_pipeline(self) -> bool:
+        return any(v > 0 for v in self.config.overlap)
+
+    @property
     def chunks(self) -> list[ChunkRef]:
         if self.config.volume_shape is None:
             raise RuntimeError("LargeDecodeRunner is not initialized with a volume shape.")
         return build_chunk_grid(self.config.volume_shape, self.config.chunk_shape)
 
     @property
+    def overlap_chunks(self) -> list[ChunkRef]:
+        """Chunks with overlap extensions for the overlap pipeline."""
+        if self.config.volume_shape is None:
+            raise RuntimeError("LargeDecodeRunner is not initialized with a volume shape.")
+        return build_chunk_grid_overlap(
+            self.config.volume_shape, self.config.chunk_shape, self.config.overlap
+        )
+
+    @property
     def chunk_map(self) -> Dict[str, ChunkRef]:
         return {chunk.key: chunk for chunk in self.chunks}
+
+    @property
+    def overlap_chunk_map(self) -> Dict[str, ChunkRef]:
+        return {chunk.key: chunk for chunk in self.overlap_chunks}
 
     @property
     def borders(self) -> list[BorderRef]:
@@ -245,11 +269,16 @@ class LargeDecodeRunner:
                 )
         else:
             self._write_config()
-        tasks = build_large_decode_tasks(self.chunks, write_output=self.config.write_output)
+        if self._use_overlap_pipeline:
+            tasks = build_large_decode_tasks_overlap(
+                self.chunks, self.borders, write_output=self.config.write_output,
+            )
+        else:
+            tasks = build_large_decode_tasks(self.chunks, write_output=self.config.write_output)
         self.orchestrator.register(tasks)
 
     def handlers(self) -> Dict[str, Any]:
-        return {
+        h = {
             "decode_chunk": self.handle_decode_chunk,
             "compute_offsets": self.handle_compute_offsets,
             "connect_border": self.handle_connect_border,
@@ -257,6 +286,15 @@ class LargeDecodeRunner:
             "apply_relabel": self.handle_apply_relabel,
             "assemble_output": self.handle_assemble_output,
         }
+        if self._use_overlap_pipeline:
+            h.update({
+                "fragment_chunk": self.handle_fragment_chunk,
+                "stitch_overlap": self.handle_stitch_overlap,
+                "build_rg_chunk": self.handle_build_rg_chunk,
+                "merge_rg": self.handle_merge_rg,
+                "agglomerate": self.handle_agglomerate,
+            })
+        return h
 
     def run_serial(
         self,
@@ -432,6 +470,172 @@ class LargeDecodeRunner:
                 ] = seg
         return {"output_path": str(output_path)}
 
+    # ------------------------------------------------------------------
+    # Overlap pipeline handlers
+    # ------------------------------------------------------------------
+
+    def handle_fragment_chunk(self, record: TaskRecord) -> Dict[str, Any]:
+        """Watershed per chunk with overlap — no agglomeration."""
+        os.environ.setdefault("CCACHE_DISABLE", "1")
+        chunk_key = record.spec.key
+        ov_chunk = self.overlap_chunk_map[chunk_key]
+        affs = self._read_affinity_chunk(ov_chunk)
+
+        from .seg_init import compute_fragments
+        seg = compute_fragments(
+            affs,
+            aff_threshold_low=self.config.aff_threshold_low,
+            aff_threshold_high=self.config.aff_threshold_high,
+            scoring_function=self.config.scoring_function,
+            force_rebuild=self.config.force_rebuild,
+        )
+        path = self._raw_chunk_path(chunk_key)
+        self._write_chunk_seg(path, seg)
+        return {"chunk_path": str(path), "max_id": int(seg.max())}
+
+    def handle_stitch_overlap(self, record: TaskRecord) -> Dict[str, Any]:
+        """Consensus-match fragment IDs in overlap zone between adjacent chunks."""
+        border_key = record.spec.key
+        border = self.border_map[border_key]
+        src_ov = self.overlap_chunk_map[border.src.key]
+        dst_ov = self.overlap_chunk_map[border.dst.key]
+        src_base = self.chunk_map[border.src.key]
+        dst_base = self.chunk_map[border.dst.key]
+
+        src_seg = self._read_chunk_seg(self._raw_chunk_path(border.src.key))
+        dst_seg = self._read_chunk_seg(self._raw_chunk_path(border.dst.key))
+
+        # Compute overlap region in volume coordinates
+        ovl_start = tuple(max(src_ov.start[i], dst_ov.start[i]) for i in range(3))
+        ovl_stop = tuple(min(src_ov.stop[i], dst_ov.stop[i]) for i in range(3))
+
+        # Convert to local chunk coordinates
+        src_local = tuple(slice(ovl_start[i] - src_ov.start[i], ovl_stop[i] - src_ov.start[i]) for i in range(3))
+        dst_local = tuple(slice(ovl_start[i] - dst_ov.start[i], ovl_stop[i] - dst_ov.start[i]) for i in range(3))
+
+        overlap_src = src_seg[src_local]
+        overlap_dst = dst_seg[dst_local]
+
+        remap = build_overlap_remap(overlap_src, overlap_dst)
+        apply_overlap_remap(dst_seg, remap)
+
+        # Write back the remapped dst segmentation
+        path = self._raw_chunk_path(border.dst.key)
+        self._write_chunk_seg(path, dst_seg)
+        return {"border_key": border_key, "num_remapped": len(remap)}
+
+    def handle_build_rg_chunk(self, record: TaskRecord) -> Dict[str, Any]:
+        """Build scored region graph with contact areas for one chunk."""
+        os.environ.setdefault("CCACHE_DISABLE", "1")
+        chunk_key = record.spec.key
+        ov_chunk = self.overlap_chunk_map[chunk_key]
+        base_chunk = self.chunk_map[chunk_key]
+
+        affs = self._read_affinity_chunk(ov_chunk)
+        seg = self._read_chunk_seg(self._raw_chunk_path(chunk_key))
+
+        # Apply global offset so IDs are unique across chunks
+        offsets = self._read_json(self._offsets_path())
+        offset = int(offsets["chunk_offsets"][chunk_key])
+        if offset:
+            mask = seg > 0
+            seg[mask] += offset
+
+        from ._merge import get_region_graph_rich
+        rg_affs, id1, id2, contact_areas = get_region_graph_rich(
+            seg, affs, scoring_function=self.config.scoring_function,
+        )
+
+        path = self._rg_chunk_path(chunk_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(path, rg_affs=rg_affs, id1=id1, id2=id2, contact_areas=contact_areas)
+        return {"rg_path": str(path), "num_edges": len(rg_affs)}
+
+    def handle_merge_rg(self, record: TaskRecord) -> Dict[str, Any]:
+        """Merge per-chunk region graphs into a single global region graph."""
+        rg_list = []
+        for chunk in self.chunks:
+            path = self._rg_chunk_path(chunk.key)
+            data = np.load(path)
+            rg_list.append((
+                data["rg_affs"],
+                data["id1"],
+                data["id2"],
+                data["contact_areas"],
+            ))
+
+        merged_affs, merged_id1, merged_id2, merged_areas = merge_region_graphs(rg_list)
+
+        path = self._merged_rg_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(
+            path,
+            rg_affs=merged_affs,
+            id1=merged_id1,
+            id2=merged_id2,
+            contact_areas=merged_areas,
+        )
+        return {"merged_rg_path": str(path), "num_edges": len(merged_affs)}
+
+    def handle_agglomerate(self, record: TaskRecord) -> Dict[str, Any]:
+        """Threshold merge on the global merged region graph."""
+        data = np.load(self._merged_rg_path())
+        rg_affs = data["rg_affs"]
+        id1 = data["id1"]
+        id2 = data["id2"]
+
+        offsets = self._read_json(self._offsets_path())
+        global_max_id = int(offsets["global_max_id"])
+
+        # Build global counts from all chunks
+        counts = np.zeros(global_max_id + 1, dtype=np.uint64)
+        for chunk in self.chunks:
+            seg = self._read_chunk_seg(self._raw_chunk_path(chunk.key))
+            chunk_offset = int(offsets["chunk_offsets"][chunk.key])
+            if chunk_offset:
+                mask = seg > 0
+                seg[mask] += chunk_offset
+            ids, cnts = np.unique(seg, return_counts=True)
+            valid = ids <= global_max_id
+            np.add.at(counts, ids[valid], cnts[valid].astype(np.uint64))
+
+        # Use the highest threshold
+        threshold = max(self.config.thresholds)
+
+        # Merge: edges with affinity >= threshold
+        # merge_segments expects sorted descending, which merge_region_graphs provides
+        # Build a dummy seg volume (we only need the relabel mapping)
+        # Instead, compute the mapping via merge_id on qualifying edges
+        qualify = rg_affs >= threshold
+        if qualify.any():
+            q_id1 = id1[qualify]
+            q_id2 = id2[qualify]
+            # Add sentinel to ensure array covers global_max_id
+            sentinel = np.array([global_max_id], dtype=np.uint64)
+            all_id1 = np.concatenate([q_id1, sentinel])
+            all_id2 = np.concatenate([q_id2, sentinel])
+            roots = merge_id(all_id1, all_id2)
+            if len(roots) < global_max_id + 1:
+                padded = np.arange(global_max_id + 1, dtype=np.uint64)
+                padded[:len(roots)] = roots
+                roots = padded
+        else:
+            roots = np.arange(global_max_id + 1, dtype=np.uint64)
+
+        # Compact the mapping
+        mapping = np.zeros(global_max_id + 1, dtype=np.uint64)
+        _, inverse = np.unique(roots[1:], return_inverse=True)
+        mapping[1:] = inverse.astype(np.uint64) + 1
+
+        relabel_path = self._relabel_path()
+        relabel_path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(relabel_path, mapping)
+        return {
+            "relabel_path": str(relabel_path),
+            "global_max_id": global_max_id,
+            "final_max_id": int(mapping.max()) if mapping.size else 0,
+        }
+
     def _discover_volume_shape(self) -> tuple[int, int, int]:
         h5py = _require_h5py()
         with h5py.File(self.config.affinity_path, "r") as handle:
@@ -463,6 +667,12 @@ class LargeDecodeRunner:
     def _relabel_path(self) -> Path:
         return self.root / "artifacts" / "relabel.npy"
 
+    def _rg_chunk_path(self, chunk_key: str) -> Path:
+        return self.root / "rg" / f"{chunk_key}.npz"
+
+    def _merged_rg_path(self) -> Path:
+        return self.root / "artifacts" / "merged_rg.npz"
+
     def _write_json(self, path: Path, payload: Mapping[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("w", encoding="utf-8") as handle:
@@ -484,11 +694,11 @@ class LargeDecodeRunner:
                     chunk.start[1]:chunk.stop[1],
                     chunk.start[2]:chunk.stop[2],
                 ],
-                dtype=np.float32,
+                
             )
         if self.config.channel_order == "xyz":
             affs = affs[[2, 1, 0]]
-        return np.ascontiguousarray(affs, dtype=np.float32)
+        return np.ascontiguousarray(affs)
 
     def _read_boundary_affinity(self, border: BorderRef) -> np.ndarray:
         h5py = _require_h5py()
