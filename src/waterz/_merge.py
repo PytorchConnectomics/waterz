@@ -25,11 +25,11 @@ __all__ = [
     "merge_function_to_scoring",
     "merge_segments",
     "merge_dust",
-    "strip_border",
+    "strip_boundary",
 ]
 
 
-def strip_border(
+def strip_boundary(
     seg: "NDArray",
     affs: "NDArray",
     threshold: float = 0.1,
@@ -37,7 +37,7 @@ def strip_border(
 ) -> int:
     """Zero out segmentation voxels at weak affinity boundaries.
 
-    Strips noisy border voxels from segments so that subsequent dust
+    Strips noisy boundary voxels from segments so that subsequent dust
     merge sees true core sizes rather than inflated sizes.  Segments
     that shrink to size 0 are naturally handled by ``dust_remove_size``.
 
@@ -76,9 +76,9 @@ def strip_border(
     if is_uint8:
         mean_aff /= 255.0
 
-    border_mask = mean_aff < threshold
-    n_removed = int(border_mask.sum())
-    seg[border_mask] = 0
+    boundary_mask = mean_aff < threshold
+    n_removed = int(boundary_mask.sum())
+    seg[boundary_mask] = 0
     return n_removed
 
 

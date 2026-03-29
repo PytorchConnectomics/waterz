@@ -94,3 +94,9 @@ def test_waterz_as_dict_preserves_tuple_results() -> None:
     assert segmentation.shape == (2, 2, 2)
     assert isinstance(region_graph, list)
     assert region_graph
+
+
+def test_merge_function_to_scoring_accepts_affmean_alias() -> None:
+    assert wz.merge_function_to_scoring("affmean") == (
+        "OneMinus<MeanAffinity<RegionGraphType, ScoreValue>>"
+    )
