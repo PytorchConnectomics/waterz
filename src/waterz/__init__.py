@@ -8,7 +8,7 @@ except PackageNotFoundError:  # pragma: no cover
     __version__ = "uninstalled"
 
 from ._agglomerate import agglomerate
-from ._merge import dust_merge_from_region_graph, get_region_graph, merge_dust, merge_function_to_scoring, merge_segments
+from ._merge import dust_merge_from_region_graph, get_region_graph, merge_dust, merge_function_to_scoring, merge_segments, strip_border
 from ._waterz import waterz
 from .evaluate import evaluate
 from .large_decode import LargeDecodeConfig, LargeDecodeRunner, decode_large
@@ -44,5 +44,6 @@ __all__ = [
     "merge_id",
     "merge_segments",
     "slice_overlaps",
+    "strip_border",
     "waterz",
 ]

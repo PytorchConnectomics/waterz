@@ -25,7 +25,61 @@ __all__ = [
     "merge_function_to_scoring",
     "merge_segments",
     "merge_dust",
+    "strip_border",
 ]
+
+
+def strip_border(
+    seg: "NDArray",
+    affs: "NDArray",
+    threshold: float = 0.1,
+    channels: str = "xy",
+) -> int:
+    """Zero out segmentation voxels at weak affinity boundaries.
+
+    Strips noisy border voxels from segments so that subsequent dust
+    merge sees true core sizes rather than inflated sizes.  Segments
+    that shrink to size 0 are naturally handled by ``dust_remove_size``.
+
+    Parameters
+    ----------
+    seg : ndarray, shape ``(Z, Y, X)``
+        Segmentation (modified in-place).
+    affs : ndarray, shape ``(3, Z, Y, X)``
+        Affinities in **z, y, x** channel order.  Values in [0, 1] or
+        [0, 255] for uint8.
+    threshold : float
+        Voxels with mean affinity below this value are set to 0.
+        Specified in [0, 1] range regardless of dtype (auto-scaled
+        for uint8).  Default: 0.1
+    channels : str
+        Which affinity channels to average: ``"xy"`` (default, channels
+        1+2), ``"all"`` (channels 0+1+2), or ``"z"`` (channel 0 only).
+
+    Returns
+    -------
+    int
+        Number of voxels removed.
+    """
+    affs = np.asarray(affs)
+    is_uint8 = affs.dtype == np.uint8
+
+    if channels == "xy":
+        mean_aff = affs[1:3].astype(np.float32, copy=False).mean(axis=0)
+    elif channels == "all":
+        mean_aff = affs[0:3].astype(np.float32, copy=False).mean(axis=0)
+    elif channels == "z":
+        mean_aff = affs[0].astype(np.float32, copy=False)
+    else:
+        raise ValueError(f"Unknown channels: {channels!r}. Expected 'xy', 'all', or 'z'.")
+
+    if is_uint8:
+        mean_aff /= 255.0
+
+    border_mask = mean_aff < threshold
+    n_removed = int(border_mask.sum())
+    seg[border_mask] = 0
+    return n_removed
 
 
 # ---------------------------------------------------------------------------
@@ -41,6 +95,7 @@ def merge_function_to_scoring(shorthand: str) -> str:
 
     Supported shorthands (examples)::
 
+        affmean       -> OneMinus<MeanAffinity<RG, SV>>
         aff50_his256  -> OneMinus<HistogramQuantileAffinity<RG, 50, SV, 256>>
         aff85_his256  -> OneMinus<HistogramQuantileAffinity<RG, 85, SV, 256>>
         aff50_his0    -> OneMinus<QuantileAffinity<RG, 50, SV>>
@@ -50,6 +105,10 @@ def merge_function_to_scoring(shorthand: str) -> str:
     parts = {tok[:3]: tok[3:] for tok in shorthand.split("_")}
     use_255 = parts.get("ran") == "255"
     wrapper = "One255Minus" if use_255 else "OneMinus"
+
+    if shorthand in {"affmean", "mean", "mean_affinity"}:
+        inner = f"MeanAffinity<{_RG}, {_SV}>"
+        return f"{wrapper}<{inner}>"
 
     if "aff" in parts:
         quantile = parts["aff"]
@@ -71,7 +130,7 @@ def merge_function_to_scoring(shorthand: str) -> str:
 
     raise ValueError(
         f"Unknown merge_function shorthand: {shorthand!r}. "
-        "Expected format like 'aff50_his256', 'aff85_his256', 'max10', etc."
+        "Expected format like 'affmean', 'aff50_his256', 'aff85_his256', 'max10', etc."
     )
 
 
