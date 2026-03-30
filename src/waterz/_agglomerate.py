@@ -107,6 +107,7 @@ def _compile_module(
     Returns the compiled module with ``agglomerate()`` and
     ``buildRegionGraphOnly()`` entry points.
     """
+    import fcntl
     import os
     import subprocess
     import sys as _sys
@@ -164,38 +165,47 @@ def _compile_module(
     if (_boost_inc / "boost").is_dir():
         include_dirs.append(str(_boost_inc))
 
-    # Pre-compile frontend C++
-    frontend_cpp = HERE / "frontend_agglomerate.cpp"
-    obj_path = cache_dir / f"_waterz_frontend_{header_key}.o"
+    # File lock to prevent concurrent JIT compilation across workers
+    # (e.g. SLURM array jobs sharing ~/.cache/witty on NFS).
+    lock_path = cache_dir / f"_waterz_compile_{header_key}.lock"
+    lock_file = open(lock_path, "w")
+    fcntl.flock(lock_file, fcntl.LOCK_EX)
+    try:
+        # Pre-compile frontend C++
+        frontend_cpp = HERE / "frontend_agglomerate.cpp"
+        obj_path = cache_dir / f"_waterz_frontend_{header_key}.o"
 
-    if not obj_path.exists() or force_rebuild:
-        compile_cmd = ["g++", "-c", "-fPIC", "-std=c++11", "-w", "-O2"]
-        for d in include_dirs:
-            compile_cmd += ["-I", d]
-        compile_cmd += [str(frontend_cpp), "-o", str(obj_path)]
-        env = os.environ.copy()
-        env["CCACHE_DISABLE"] = "1"
-        subprocess.check_call(compile_cmd, env=env)
+        if not obj_path.exists() or force_rebuild:
+            compile_cmd = ["g++", "-c", "-fPIC", "-std=c++11", "-w", "-O2"]
+            for d in include_dirs:
+                compile_cmd += ["-I", d]
+            compile_cmd += [str(frontend_cpp), "-o", str(obj_path)]
+            env = os.environ.copy()
+            env["CCACHE_DISABLE"] = "1"
+            subprocess.check_call(compile_cmd, env=env)
 
-    # Patch .pyx source for uint8 affinities and/or uint32 segmentation
-    pyx_source = (HERE / "agglomerate.pyx").read_text()
-    if aff_ctype == "uint8_t":
-        for old, new in _PYX_UINT8_PATCHES:
-            pyx_source = pyx_source.replace(old, new)
-    if seg_ctype == "uint32_t":
-        for old, new in _PYX_UINT32_SEG_PATCHES:
-            pyx_source = pyx_source.replace(old, new)
+        # Patch .pyx source for uint8 affinities and/or uint32 segmentation
+        pyx_source = (HERE / "agglomerate.pyx").read_text()
+        if aff_ctype == "uint8_t":
+            for old, new in _PYX_UINT8_PATCHES:
+                pyx_source = pyx_source.replace(old, new)
+        if seg_ctype == "uint32_t":
+            for old, new in _PYX_UINT32_SEG_PATCHES:
+                pyx_source = pyx_source.replace(old, new)
 
-    module = witty.compile_cython(
-        pyx_source,
-        source_files=[str(frontend_cpp)],
-        extra_link_args=["-std=c++11", str(obj_path)],
-        extra_compile_args=["-std=c++11", "-w"],
-        include_dirs=include_dirs,
-        language="c++",
-        quiet=True,
-        force_rebuild=force_rebuild,
-    )
+        module = witty.compile_cython(
+            pyx_source,
+            source_files=[str(frontend_cpp)],
+            extra_link_args=["-std=c++11", str(obj_path)],
+            extra_compile_args=["-std=c++11", "-w"],
+            include_dirs=include_dirs,
+            language="c++",
+            quiet=True,
+            force_rebuild=force_rebuild,
+        )
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()
     return module
 
 
