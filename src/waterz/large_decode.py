@@ -86,6 +86,8 @@ class LargeDecodeConfig:
     compression_level: int = 4
     force_rebuild: bool = False
     volume_shape: Optional[tuple[int, int, int]] = None
+    use_aff_uint8: bool = False
+    use_seg_uint32: bool = False
 
     def __post_init__(self) -> None:
         self.affinity_path = str(Path(self.affinity_path))
@@ -161,6 +163,8 @@ class LargeDecodeConfig:
             compression_level=int(data.get("compression_level", 4)),
             force_rebuild=bool(data.get("force_rebuild", False)),
             volume_shape=(tuple(int(v) for v in data["volume_shape"]) if data.get("volume_shape") is not None else None),
+            use_aff_uint8=bool(data.get("use_aff_uint8", False)),
+            use_seg_uint32=bool(data.get("use_seg_uint32", False)),
         )
 
 
@@ -363,14 +367,27 @@ class LargeDecodeRunner:
 
     def handle_decode_chunk(self, record: TaskRecord) -> Dict[str, Any]:
         os.environ.setdefault("CCACHE_DISABLE", "1")
+        from ._uint8 import scale_aff_threshold, scale_thresholds
+
         chunk = self.chunk_map[record.spec.key]
         affs = self._read_affinity_chunk(chunk)
 
+        is_uint8 = affs.dtype == np.uint8
+        if not is_uint8:
+            affs = affs.astype(np.float32, copy=False)
+
+        # Scale float [0,1] parameters to [0,255] for uint8, matching decode_waterz
+        thresholds = scale_thresholds(self.config.thresholds, is_uint8)
+        aff_low, aff_high = scale_aff_threshold(
+            (self.config.aff_threshold_low, self.config.aff_threshold_high), is_uint8,
+        )
+
         waterz_kwargs = dict(
-            thresholds=self.config.thresholds,
-            aff_threshold_low=self.config.aff_threshold_low,
-            aff_threshold_high=self.config.aff_threshold_high,
+            thresholds=thresholds,
+            aff_threshold_low=aff_low,
+            aff_threshold_high=aff_high,
             scoring_function=self.config.scoring_function,
+            seg_dtype="uint32" if self.config.use_seg_uint32 else "uint64",
             force_rebuild=self.config.force_rebuild,
         )
         if self.config.compute_fragments:
@@ -390,18 +407,17 @@ class LargeDecodeRunner:
 
         # Strip weak-boundary voxels
         if self.config.border_threshold > 0:
-            from .face_merge import slice_overlaps  # noqa: F401 (side-effect-free)
             xy_mean = affs[1:3].astype(np.float32, copy=False).mean(axis=0)
-            if affs.dtype == np.uint8:
+            if is_uint8:
                 xy_mean /= 255.0
             seg[xy_mean < self.config.border_threshold] = 0
 
-        # Dust merge using agglomeration's region graph
+        # Dust merge using agglomeration's region graph (cached scores, no re-scoring)
         if do_dust:
             from ._merge import dust_merge_from_region_graph
             dust_merge_from_region_graph(
                 seg, region_graph,
-                is_uint8=(affs.dtype == np.uint8),
+                is_uint8=is_uint8,
                 size_th=self.config.dust_merge_size,
                 weight_th=self.config.dust_merge_affinity,
                 dust_th=self.config.dust_remove_size,
@@ -409,6 +425,20 @@ class LargeDecodeRunner:
 
         path = self._raw_chunk_path(chunk.key)
         self._write_chunk_seg(path, seg)
+
+        # Pre-extract boundary faces as .npy so connect_border avoids HDF5 re-reads
+        for axis, dim, side_idx in [("z", 0, -1), ("y", 1, -1), ("x", 2, -1)]:
+            for side, idx in [("src", side_idx), ("dst", 0)]:
+                fp = self._face_path(chunk.key, axis, side)
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                if dim == 0:
+                    face = seg[idx, :, :]
+                elif dim == 1:
+                    face = seg[:, idx, :]
+                else:
+                    face = seg[:, :, idx]
+                np.save(fp, face)
+
         return {"chunk_path": str(path), "max_id": int(seg.max())}
 
     def handle_compute_offsets(self, record: TaskRecord) -> Dict[str, Any]:
@@ -432,8 +462,16 @@ class LargeDecodeRunner:
     def handle_connect_border(self, record: TaskRecord) -> Dict[str, Any]:
         border = self.border_map[record.spec.key]
         offsets = self._read_json(self._offsets_path())
-        src_face = self._read_chunk_face(self._raw_chunk_path(border.src.key), border.axis, side="src")
-        dst_face = self._read_chunk_face(self._raw_chunk_path(border.dst.key), border.axis, side="dst")
+
+        # Read pre-extracted .npy faces (fast), fall back to HDF5
+        src_npy = self._face_path(border.src.key, border.axis, "src")
+        dst_npy = self._face_path(border.dst.key, border.axis, "dst")
+        if src_npy.exists() and dst_npy.exists():
+            src_face = np.load(src_npy).astype(np.uint64, copy=False)
+            dst_face = np.load(dst_npy).astype(np.uint64, copy=False)
+        else:
+            src_face = self._read_chunk_face(self._raw_chunk_path(border.src.key), border.axis, side="src")
+            dst_face = self._read_chunk_face(self._raw_chunk_path(border.dst.key), border.axis, side="dst")
 
         src_offset = int(offsets["chunk_offsets"][border.src.key])
         dst_offset = int(offsets["chunk_offsets"][border.dst.key])
@@ -702,6 +740,9 @@ class LargeDecodeRunner:
     def _final_chunk_path(self, chunk_key: str) -> Path:
         return self.root / "chunks" / "final" / f"{chunk_key}.h5"
 
+    def _face_path(self, chunk_key: str, axis: str, side: str) -> Path:
+        return self.root / "chunks" / "faces" / f"{chunk_key}_{axis}_{side}.npy"
+
     def _connect_path(self, border_key: str) -> Path:
         return self.root / "connect" / f"{_safe_name(border_key)}.npy"
 
@@ -738,7 +779,6 @@ class LargeDecodeRunner:
                     chunk.start[1]:chunk.stop[1],
                     chunk.start[2]:chunk.stop[2],
                 ],
-                
             )
         if self.config.channel_order == "xyz":
             affs = affs[[2, 1, 0]]
@@ -770,12 +810,19 @@ class LargeDecodeRunner:
                     border.src.start[1]:border.src.stop[1],
                     border.dst.start[2],
                 ]
-            return np.array(data, dtype=np.float32)
+            arr = np.array(data)
+            if arr.dtype == np.uint8:
+                return arr.astype(np.float32) / 255.0
+            return np.asarray(arr, dtype=np.float32)
 
-    def _write_chunk_seg(self, path: Path, seg: np.ndarray) -> None:
+    def _write_chunk_seg(self, path: Path, seg: np.ndarray, *, compress: bool = False) -> None:
         h5py = _require_h5py()
         path.parent.mkdir(parents=True, exist_ok=True)
-        kwargs = _compression_kwargs(self.config.compression, self.config.compression_level)
+        kwargs = (
+            _compression_kwargs(self.config.compression, self.config.compression_level)
+            if compress
+            else {}
+        )
         with h5py.File(path, "w") as handle:
             handle.create_dataset("main", data=seg, dtype=seg.dtype, **kwargs)
             handle.create_dataset("max", data=np.asarray(int(seg.max()), dtype=np.uint64))

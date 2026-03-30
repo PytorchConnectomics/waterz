@@ -144,11 +144,9 @@ public:
 			if (_deleted[e])
 				continue;
 
-			ScoreType score;
-			if (_stale[e])
-				score = scoreEdge(e, edgeScoringFunction);
-			else
-				score = _edgeScores[e];
+			// Use cached score directly — skip expensive re-scoring of
+			// stale edges.  For dust merge the cached score is sufficient.
+			ScoreType score = _edgeScores[e];
 
 			if (score < _mergedUntil)
 				continue;

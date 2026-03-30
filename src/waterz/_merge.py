@@ -501,14 +501,15 @@ def dust_merge_from_region_graph(
     """
     seg = np.ascontiguousarray(seg, dtype=np.uint64)
     n_edges = len(region_graph)
-    rg_affs = np.empty(n_edges, dtype=np.float32)
-    id1 = np.empty(n_edges, dtype=np.uint64)
-    id2 = np.empty(n_edges, dtype=np.uint64)
     score_max = 255.0 if is_uint8 else 1.0
-    for idx, edge in enumerate(region_graph):
-        rg_affs[idx] = score_max - float(edge["score"])
-        id1[idx] = int(edge["u"])
-        id2[idx] = int(edge["v"])
+    if n_edges > 0:
+        rg_affs = score_max - np.array([e["score"] for e in region_graph], dtype=np.float32)
+        id1 = np.array([e["u"] for e in region_graph], dtype=np.uint64)
+        id2 = np.array([e["v"] for e in region_graph], dtype=np.uint64)
+    else:
+        rg_affs = np.empty(0, dtype=np.float32)
+        id1 = np.empty(0, dtype=np.uint64)
+        id2 = np.empty(0, dtype=np.uint64)
     if n_edges:
         np.clip(rg_affs, 0.0, score_max, out=rg_affs)
         order = np.argsort(rg_affs)[::-1]
