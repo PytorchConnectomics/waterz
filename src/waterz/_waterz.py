@@ -50,6 +50,7 @@ def waterz(
     discretize_queue: int = 0,
     force_rebuild: bool = False,
     return_region_graph: bool = False,
+    rescore_region_graph: bool = True,
     seg_dtype: str = "uint64",
     as_dict: bool = False,
 ) -> Union[List[Any], Dict[float, Any]]:
@@ -134,6 +135,7 @@ def waterz(
         aff_threshold_low=aff_threshold_low,
         aff_threshold_high=aff_threshold_high,
         return_region_graph=return_region_graph,
+        rescore_region_graph=rescore_region_graph,
         scoring_function=scoring_function,
         discretize_queue=discretize_queue,
         seg_dtype=seg_dtype,

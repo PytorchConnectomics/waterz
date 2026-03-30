@@ -133,9 +133,15 @@ public:
 
 	/**
 	 * Get the region graph corresponding to the current merge level.
+	 *
+	 * @param rescore  If true (default), re-evaluate stale edges for
+	 *                 accurate scores.  If false, use cached scores
+	 *                 (fast approximation, suitable for dust merge).
 	 */
 	template <typename ScoredEdge, typename EdgeScoringFunction>
-	std::vector<ScoredEdge> extractRegionGraph(EdgeScoringFunction& edgeScoringFunction) {
+	std::vector<ScoredEdge> extractRegionGraph(
+			EdgeScoringFunction& edgeScoringFunction,
+			bool rescore = true) {
 
 		std::vector<ScoredEdge> edges;
 
@@ -144,9 +150,11 @@ public:
 			if (_deleted[e])
 				continue;
 
-			// Use cached score directly — skip expensive re-scoring of
-			// stale edges.  For dust merge the cached score is sufficient.
-			ScoreType score = _edgeScores[e];
+			ScoreType score;
+			if (rescore && _stale[e])
+				score = scoreEdge(e, edgeScoringFunction);
+			else
+				score = _edgeScores[e];
 
 			if (score < _mergedUntil)
 				continue;

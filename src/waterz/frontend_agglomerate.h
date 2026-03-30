@@ -171,7 +171,7 @@ std::vector<Merge> mergeUntil(
 		WaterzState& state,
 		ScoreValue   threshold);
 
-std::vector<ScoredEdge> getRegionGraph(WaterzState& state);
+std::vector<ScoredEdge> getRegionGraph(WaterzState& state, bool rescore = true);
 
 /**
  * Build region graph and extract scored edges without creating

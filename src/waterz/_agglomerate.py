@@ -213,6 +213,7 @@ def agglomerate(
     aff_threshold_high: float = 0.9999,
     return_merge_history: bool = False,
     return_region_graph: bool = False,
+    rescore_region_graph: bool = True,
     scoring_function: str = "OneMinus<MeanAffinity<RegionGraphType, ScoreValue>>",
     discretize_queue: int = 0,
     seg_dtype: np.dtype | str = "uint64",
@@ -275,6 +276,7 @@ def agglomerate(
         aff_threshold_high,
         return_merge_history,
         return_region_graph,
+        rescore_region_graph,
     )
 
 

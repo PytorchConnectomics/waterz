@@ -18,7 +18,8 @@ def agglomerate(
         aff_threshold_low=0.0001,
         aff_threshold_high=0.9999,
         return_merge_history=False,
-        return_region_graph=False):
+        return_region_graph=False,
+        rescore_region_graph=True):
 
     if not affs.flags['C_CONTIGUOUS']:
         affs = np.ascontiguousarray(affs)
@@ -58,7 +59,7 @@ def agglomerate(
             result += (merge_history,)
 
         if return_region_graph:
-            result += (getRegionGraph(state),)
+            result += (getRegionGraph(state, rescore_region_graph),)
 
         if len(result) == 1:
             yield result[0]
@@ -137,7 +138,7 @@ cdef extern from "frontend_agglomerate.h":
             WaterzState& state,
             float        threshold)
 
-    vector[ScoredEdge] getRegionGraph(WaterzState& state)
+    vector[ScoredEdge] getRegionGraph(WaterzState& state, bool rescore)
 
     vector[ScoredEdge] c_buildRegionGraphOnly "buildRegionGraphOnly" (
             size_t          width,

@@ -396,6 +396,7 @@ class LargeDecodeRunner:
 
         do_dust = self.config.dust_merge and self.config.dust_merge_size > 0
         waterz_kwargs["return_region_graph"] = do_dust
+        waterz_kwargs["rescore_region_graph"] = False  # fast: use cached scores
 
         seg_results = _run_waterz(affs, **waterz_kwargs)
         if do_dust:
