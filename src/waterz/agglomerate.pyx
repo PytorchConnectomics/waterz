@@ -61,9 +61,11 @@ def agglomerate(
         if return_region_graph:
             rg_edges = getRegionGraph(state, rescore_region_graph)
             n_rg = rg_edges.size()
-            rg_scores = np.empty(n_rg, dtype=np.float32)
-            rg_id1 = np.empty(n_rg, dtype=np.uint64)
-            rg_id2 = np.empty(n_rg, dtype=np.uint64)
+            # Score dtype matches affinities (float32 or uint8).
+            # ID dtype matches segmentation (uint64 or uint32).
+            rg_scores = np.empty(n_rg, dtype=affs.dtype)
+            rg_id1 = np.empty(n_rg, dtype=segmentation.dtype)
+            rg_id2 = np.empty(n_rg, dtype=segmentation.dtype)
             for i in range(n_rg):
                 rg_scores[i] = rg_edges[i].score
                 rg_id1[i] = rg_edges[i].u
