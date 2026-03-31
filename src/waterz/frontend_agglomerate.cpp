@@ -121,8 +121,6 @@ mergeUntil(
 
 	WaterzContext* context = WaterzContext::get(state.context);
 
-	std::cout << "merging until threshold " << (double)threshold << std::endl;
-
 	std::vector<Merge>  mergeHistory;
 	MergeHistoryVisitor mergeHistoryVisitor(mergeHistory);
 
