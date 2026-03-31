@@ -59,7 +59,16 @@ def agglomerate(
             result += (merge_history,)
 
         if return_region_graph:
-            result += (getRegionGraph(state, rescore_region_graph),)
+            rg_edges = getRegionGraph(state, rescore_region_graph)
+            n_rg = rg_edges.size()
+            rg_scores = np.empty(n_rg, dtype=np.float32)
+            rg_id1 = np.empty(n_rg, dtype=np.uint64)
+            rg_id2 = np.empty(n_rg, dtype=np.uint64)
+            for i in range(n_rg):
+                rg_scores[i] = rg_edges[i].score
+                rg_id1[i] = rg_edges[i].u
+                rg_id2[i] = rg_edges[i].v
+            result += ((rg_scores, rg_id1, rg_id2),)
 
         if len(result) == 1:
             yield result[0]

@@ -465,7 +465,7 @@ def _build_segment_counts(seg: np.ndarray) -> np.ndarray:
 
 def dust_merge_from_region_graph(
     seg: np.ndarray,
-    region_graph: list,
+    region_graph,
     *,
     is_uint8: bool = False,
     size_th: int,
@@ -474,10 +474,9 @@ def dust_merge_from_region_graph(
 ) -> None:
     """Invert OneMinus/One255Minus scores and merge dust segments.
 
-    Extracts edges from a waterz region graph (list of dicts with
-    ``"u"``, ``"v"``, ``"score"`` keys), inverts the OneMinus or
-    One255Minus scoring back to raw affinities, sorts descending,
-    builds segment counts, and calls :func:`merge_segments`.
+    Accepts region graph as either:
+    - tuple ``(scores, id1, id2)`` of numpy arrays (efficient, from Cython)
+    - list of dicts with ``"u"``, ``"v"``, ``"score"`` keys (legacy)
 
     Modifies *seg* in-place.
 
@@ -485,13 +484,10 @@ def dust_merge_from_region_graph(
     ----------
     seg : ndarray, uint64, shape ``(Z, Y, X)``
         Segmentation to clean.  Modified in-place.
-    region_graph : list[dict]
-        Region graph edges as returned by ``waterz.waterz()`` with
-        ``return_region_graph=True``.  Each dict has keys
-        ``"u"``, ``"v"``, ``"score"``.
+    region_graph : tuple or list
+        Region graph from ``waterz.waterz(return_region_graph=True)``.
     is_uint8 : bool
-        If True, scores are in [0, 255] range (One255Minus) instead
-        of [0, 1] (OneMinus).
+        If True, scores are in [0, 255] range (One255Minus).
     size_th : int
         Merge if at least one segment has fewer voxels than this.
     weight_th : float
@@ -500,17 +496,26 @@ def dust_merge_from_region_graph(
         Remove segments smaller than this after merging.
     """
     seg = np.ascontiguousarray(seg, dtype=np.uint64)
-    n_edges = len(region_graph)
     score_max = 255.0 if is_uint8 else 1.0
-    if n_edges > 0:
-        rg_affs = score_max - np.array([e["score"] for e in region_graph], dtype=np.float32)
-        id1 = np.array([e["u"] for e in region_graph], dtype=np.uint64)
-        id2 = np.array([e["v"] for e in region_graph], dtype=np.uint64)
+
+    # Accept both numpy tuple (new) and list-of-dicts (legacy)
+    if isinstance(region_graph, tuple):
+        scores, id1, id2 = region_graph
+        rg_affs = score_max - scores.astype(np.float32, copy=True)
+        id1 = id1.astype(np.uint64, copy=True)
+        id2 = id2.astype(np.uint64, copy=True)
     else:
-        rg_affs = np.empty(0, dtype=np.float32)
-        id1 = np.empty(0, dtype=np.uint64)
-        id2 = np.empty(0, dtype=np.uint64)
-    if n_edges:
+        n_edges = len(region_graph)
+        if n_edges > 0:
+            rg_affs = score_max - np.array([e["score"] for e in region_graph], dtype=np.float32)
+            id1 = np.array([e["u"] for e in region_graph], dtype=np.uint64)
+            id2 = np.array([e["v"] for e in region_graph], dtype=np.uint64)
+        else:
+            rg_affs = np.empty(0, dtype=np.float32)
+            id1 = np.empty(0, dtype=np.uint64)
+            id2 = np.empty(0, dtype=np.uint64)
+
+    if len(rg_affs):
         np.clip(rg_affs, 0.0, score_max, out=rg_affs)
         order = np.argsort(rg_affs)[::-1]
         rg_affs = np.ascontiguousarray(rg_affs[order])

@@ -161,7 +161,15 @@ getRegionGraph(WaterzState& state, bool rescore) {
 	std::shared_ptr<RegionMergingType> regionMerging = context->regionMerging;
 	std::shared_ptr<ScoringFunctionType> scoringFunction = context->scoringFunction;
 
-	return regionMerging->extractRegionGraph<ScoredEdge>(*scoringFunction, rescore);
+	std::cout << "getRegionGraph: rescore=" << rescore
+	          << ", numEdges=" << context->regionGraph->numEdges()
+	          << std::endl;
+
+	auto result = regionMerging->extractRegionGraph<ScoredEdge>(*scoringFunction, rescore);
+
+	std::cout << "getRegionGraph: returned " << result.size() << " edges" << std::endl;
+
+	return result;
 }
 
 std::vector<ScoredEdge>
