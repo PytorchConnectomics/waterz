@@ -220,6 +220,19 @@ class WorkflowOrchestrator:
             self._write_record(record)
             return record
 
+    def force_complete(self, task_id: str, result: Optional[Dict[str, Any]] = None) -> bool:
+        """Mark a task as succeeded regardless of current state. Returns True if changed."""
+        with self._task_lock(task_id):
+            record = self.get_record(task_id)
+            if record.state is TaskState.SUCCEEDED:
+                return False
+            record.state = TaskState.SUCCEEDED
+            record.result = result
+            record.error = None
+            record.finished_at = _utc_now()
+            self._write_record(record)
+            return True
+
     def fail_task(self, task_id: str, error: str) -> TaskRecord:
         """Mark a running task as failed."""
         with self._task_lock(task_id):
@@ -248,6 +261,42 @@ class WorkflowOrchestrator:
                 current.finished_at = None
                 current.error = None
                 self._write_record(current)
+
+    def reset_stale_tasks(self, max_age_seconds: float = 600) -> int:
+        """Reset RUNNING tasks older than *max_age_seconds* back to PENDING.
+
+        Returns the number of tasks reset.
+        """
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        count = 0
+        for record in self.list_records():
+            if record.state is not TaskState.RUNNING:
+                continue
+            if record.started_at:
+                try:
+                    started = datetime.fromisoformat(record.started_at)
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    age = (now - started).total_seconds()
+                    if age < max_age_seconds:
+                        continue
+                except (ValueError, TypeError):
+                    pass  # unparseable timestamp — treat as stale
+            with self._task_lock(record.task_id):
+                current = self.get_record(record.task_id)
+                if current.state is not TaskState.RUNNING:
+                    continue
+                current.state = TaskState.PENDING
+                current.worker_id = None
+                current.job_id = None
+                current.started_at = None
+                current.finished_at = None
+                current.error = None
+                self._write_record(current)
+                count += 1
+        return count
 
     def run_worker(
         self,
@@ -294,6 +343,7 @@ class WorkflowOrchestrator:
                 self.fail_task(record.task_id, f"No handler registered for task {record.spec.name!r}.")
                 raise KeyError(f"No handler registered for task {record.spec.name!r}.")
 
+            print(f"[{worker_id}] {record.spec.stage}/{record.spec.key}", flush=True)
             try:
                 result = handler(record)
             except Exception as exc:  # pragma: no cover

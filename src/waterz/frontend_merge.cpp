@@ -37,8 +37,13 @@ std::size_t merge_segments_impl(
         if (w <= weight_th)
             break;  // sorted descending — rest are weaker
 
-        std::size_t s1 = sets.find(static_cast<std::size_t>(id1[i]));
-        std::size_t s2 = sets.find(static_cast<std::size_t>(id2[i]));
+        std::size_t raw1 = static_cast<std::size_t>(id1[i]);
+        std::size_t raw2 = static_cast<std::size_t>(id2[i]);
+        if (raw1 >= counts_len || raw2 >= counts_len)
+            continue;
+
+        std::size_t s1 = sets.find(raw1);
+        std::size_t s2 = sets.find(raw2);
 
         if (s1 == s2 || s1 == 0 || s2 == 0)
             continue;

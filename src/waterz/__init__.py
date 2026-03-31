@@ -9,6 +9,7 @@ except PackageNotFoundError:  # pragma: no cover
 
 from ._agglomerate import agglomerate, build_region_graph_rich
 from ._merge import dust_merge_from_region_graph, get_region_graph, get_region_graph_rich, merge_dust, merge_function_to_scoring, merge_region_graphs, merge_segments, strip_boundary
+from ._uint8 import float_to_uint8, prepare_affinities, scale_aff_threshold, scale_thresholds
 from ._waterz import waterz
 from .evaluate import evaluate
 from .large_decode import LargeDecodeConfig, LargeDecodeRunner, decode_large
@@ -46,6 +47,7 @@ __all__ = [
     "dust_merge_from_region_graph",
     "evaluate",
     "face_merge_pairs",
+    "float_to_uint8",
     "get_region_graph",
     "get_region_graph_rich",
     "merge_dust",
@@ -53,6 +55,9 @@ __all__ = [
     "merge_id",
     "merge_region_graphs",
     "merge_segments",
+    "prepare_affinities",
+    "scale_aff_threshold",
+    "scale_thresholds",
     "slice_overlaps",
     "strip_boundary",
     "waterz",
