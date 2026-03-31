@@ -12,12 +12,27 @@ Extended with region graph, merge_id, and merge_dust from
 ## Install
 
 ```sh
-# requires boost headers
-sudo apt install libboost-dev  # linux
-brew install boost              # macos
+# requires boost headers (multi_array)
 
+# Option 1: system package (requires sudo)
+sudo apt install libboost-dev     # Ubuntu/Debian
+brew install boost                 # macOS
+
+# Option 2: HPC cluster (no sudo) — use module system
+module spider boost                # find available versions
+module load boost                  # load (sets BOOST_ROOT)
+# e.g.: module load boost/1.86.0_openmpi5.0.6_gcc11.4.1
+
+# Option 3: conda
+conda install -c conda-forge boost
+
+# Then install waterz
 pip install -e .
 ```
+
+On HPC clusters, add `module load boost` to your SLURM scripts
+before running waterz. The JIT compiler picks up boost from
+`$BOOST_ROOT/include` or the conda prefix automatically.
 
 ## API
 
