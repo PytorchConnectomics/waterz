@@ -521,9 +521,6 @@ def dust_merge_from_region_graph(
             id2 = np.empty(0, dtype=np.uint64)
 
     if len(rg_affs):
-        clip_min = rg_affs.dtype.type(0)
-        clip_max = rg_affs.dtype.type(score_max)
-        np.clip(rg_affs, clip_min, clip_max, out=rg_affs)
         order = np.argsort(rg_affs)[::-1]
         rg_affs = np.ascontiguousarray(rg_affs[order])
         id1 = np.ascontiguousarray(id1[order])
