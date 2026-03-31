@@ -12,7 +12,8 @@
 #include <iostream>
 #include <vector>
 
-std::size_t merge_segments(
+template <typename SegID, typename AffValue>
+std::size_t merge_segments_impl(
     std::size_t D, std::size_t H, std::size_t W,
     SegID*          seg,
     std::size_t     n_edges,
@@ -77,3 +78,24 @@ std::size_t merge_segments(
 
     return n_segs;
 }
+
+// Explicit instantiations
+template std::size_t merge_segments_impl<uint64_t, float>(
+    std::size_t, std::size_t, std::size_t, uint64_t*, std::size_t,
+    const float*, const uint64_t*, const uint64_t*, std::size_t,
+    const uint64_t*, std::size_t, float, std::size_t);
+
+template std::size_t merge_segments_impl<uint32_t, float>(
+    std::size_t, std::size_t, std::size_t, uint32_t*, std::size_t,
+    const float*, const uint32_t*, const uint32_t*, std::size_t,
+    const uint64_t*, std::size_t, float, std::size_t);
+
+template std::size_t merge_segments_impl<uint64_t, uint8_t>(
+    std::size_t, std::size_t, std::size_t, uint64_t*, std::size_t,
+    const uint8_t*, const uint64_t*, const uint64_t*, std::size_t,
+    const uint64_t*, std::size_t, uint8_t, std::size_t);
+
+template std::size_t merge_segments_impl<uint32_t, uint8_t>(
+    std::size_t, std::size_t, std::size_t, uint32_t*, std::size_t,
+    const uint8_t*, const uint32_t*, const uint32_t*, std::size_t,
+    const uint64_t*, std::size_t, uint8_t, std::size_t);

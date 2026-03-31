@@ -366,11 +366,11 @@ def merge_region_graphs(
 
 
 def merge_segments(
-    seg: NDArray[np.uint64],
-    rg_affs: NDArray[np.float32],
-    id1: NDArray[np.uint64],
-    id2: NDArray[np.uint64],
-    counts: NDArray[np.uint64],
+    seg,
+    rg_affs,
+    id1,
+    id2,
+    counts,
     size_th: int,
     weight_th: float = 0.0,
     dust_th: int = 0,
@@ -378,12 +378,13 @@ def merge_segments(
     """Size+affinity merge followed by dust removal.
 
     Modifies *seg* in-place and returns the new segment count.
+    Accepts uint32/uint64 seg+IDs and float32/uint8 affinities.
 
     Parameters
     ----------
-    seg : ndarray, uint64, shape ``(Z, Y, X)``
-    rg_affs : ndarray, float32, shape ``(E,)`` — sorted descending
-    id1, id2 : ndarray, uint64, shape ``(E,)``
+    seg : ndarray, uint32 or uint64, shape ``(Z, Y, X)``
+    rg_affs : ndarray, float32 or uint8, shape ``(E,)`` — sorted descending
+    id1, id2 : ndarray, same dtype as seg, shape ``(E,)``
     counts : ndarray, uint64, shape ``(max_id + 1,)``
     size_th : int
         Merge if at least one segment < this many voxels.
@@ -397,10 +398,10 @@ def merge_segments(
     int
         Number of segments remaining (excluding background).
     """
-    seg = np.ascontiguousarray(seg, dtype=np.uint64)
-    rg_affs = np.ascontiguousarray(rg_affs, dtype=np.float32)
-    id1 = np.ascontiguousarray(id1, dtype=np.uint64)
-    id2 = np.ascontiguousarray(id2, dtype=np.uint64)
+    seg = np.ascontiguousarray(seg)
+    rg_affs = np.ascontiguousarray(rg_affs)
+    id1 = np.ascontiguousarray(id1, dtype=seg.dtype)
+    id2 = np.ascontiguousarray(id2, dtype=seg.dtype)
     counts = np.ascontiguousarray(counts, dtype=np.uint64)
     return _c_merge(seg, rg_affs, id1, id2, counts, size_th, weight_th, dust_th)
 
@@ -495,15 +496,19 @@ def dust_merge_from_region_graph(
     dust_th : int
         Remove segments smaller than this after merging.
     """
-    seg = np.ascontiguousarray(seg, dtype=np.uint64)
-    score_max = 255.0 if is_uint8 else 1.0
+    seg = np.ascontiguousarray(seg)
+    score_max = 255 if is_uint8 else 1.0
 
     # Accept both numpy tuple (new) and list-of-dicts (legacy)
     if isinstance(region_graph, tuple):
         scores, id1, id2 = region_graph
-        rg_affs = score_max - scores.astype(np.float32, copy=True)
-        id1 = id1.astype(np.uint64, copy=True)
-        id2 = id2.astype(np.uint64, copy=True)
+        # Invert scores in native dtype (no upcast)
+        if scores.dtype == np.uint8:
+            rg_affs = np.uint8(score_max) - scores
+        else:
+            rg_affs = np.float32(score_max) - scores.astype(np.float32)
+        id1 = id1.copy()
+        id2 = id2.copy()
     else:
         n_edges = len(region_graph)
         if n_edges > 0:
@@ -516,7 +521,9 @@ def dust_merge_from_region_graph(
             id2 = np.empty(0, dtype=np.uint64)
 
     if len(rg_affs):
-        np.clip(rg_affs, 0.0, score_max, out=rg_affs)
+        clip_min = rg_affs.dtype.type(0)
+        clip_max = rg_affs.dtype.type(score_max)
+        np.clip(rg_affs, clip_min, clip_max, out=rg_affs)
         order = np.argsort(rg_affs)[::-1]
         rg_affs = np.ascontiguousarray(rg_affs[order])
         id1 = np.ascontiguousarray(id1[order])
