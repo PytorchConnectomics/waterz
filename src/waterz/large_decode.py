@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Sequence, Union
@@ -1185,11 +1186,17 @@ class LargeDecodeRunner:
             if compress
             else {}
         )
-        with h5py.File(path, "w") as handle:
-            handle.create_dataset("main", data=seg, dtype=seg.dtype, **kwargs)
-            handle.create_dataset(
-                "max", data=np.asarray(int(seg.max()), dtype=np.uint64)
-            )
+        tmp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        try:
+            with h5py.File(tmp_path, "w") as handle:
+                handle.create_dataset("main", data=seg, dtype=seg.dtype, **kwargs)
+                handle.create_dataset(
+                    "max", data=np.asarray(int(seg.max()), dtype=np.uint64)
+                )
+            os.replace(tmp_path, path)
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
     def _read_chunk_seg(self, path: Path) -> np.ndarray:
         h5py = _require_h5py()
