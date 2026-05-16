@@ -198,6 +198,68 @@ def test_affinity_mask_is_applied_before_waterz_init(
     )
 
 
+def test_build_rg_converts_float16_affinities(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    aff_path = tmp_path / "affinities.h5"
+    workflow_root = tmp_path / "workflow"
+    _write_affinities(aff_path, np.ones((3, 4, 5, 6), dtype=np.float16))
+
+    runner = wz.LargeDecodeRunner.create(
+        affinity_path=str(aff_path),
+        workflow_root=str(workflow_root),
+        chunk_shape=(4, 5, 6),
+        overlap=(1, 0, 0),
+        thresholds=(1.0,),
+        channel_order="zyx",
+    )
+    chunk = runner.chunks[0]
+    ov_chunk = runner.overlap_chunk_map[chunk.key]
+    ov_shape = tuple(ov_chunk.stop[i] - ov_chunk.start[i] for i in range(3))
+    runner._write_chunk_seg(
+        runner._raw_chunk_path(chunk.key),
+        np.ones(ov_shape, dtype=np.uint64),
+    )
+    runner._write_json(
+        runner._offsets_path(),
+        {
+            "chunk_offsets": {chunk.key: 0},
+            "chunk_max_ids": {chunk.key: 1},
+            "global_max_id": 1,
+        },
+    )
+
+    import waterz._merge as merge
+
+    captured = {}
+
+    def _get_region_graph_rich(seg, affs, scoring_function):
+        captured["dtype"] = affs.dtype
+        assert seg.shape == affs.shape[1:]
+        return (
+            np.array([], dtype=np.float32),
+            np.array([], dtype=np.uint64),
+            np.array([], dtype=np.uint64),
+            np.array([], dtype=np.uint64),
+        )
+
+    monkeypatch.setattr(merge, "get_region_graph_rich", _get_region_graph_rich)
+
+    result = runner.handle_build_rg_chunk(
+        wz.TaskRecord(
+            spec=wz.TaskSpec(
+                name="build_rg_chunk",
+                stage="build_rg",
+                key=chunk.key,
+            )
+        )
+    )
+
+    assert captured["dtype"] == np.float32
+    assert result["num_edges"] == 0
+
+
 def test_overlap_stitch_writes_pairs_without_mutating_chunks(tmp_path: Path) -> None:
     aff_path = tmp_path / "affinities.h5"
     workflow_root = tmp_path / "workflow"

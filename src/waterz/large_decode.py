@@ -815,6 +815,8 @@ class LargeDecodeRunner:
         chunk_key = record.spec.key
         ov_chunk = self.overlap_chunk_map[chunk_key]
         affs = self._read_affinity_chunk(ov_chunk)
+        if affs.dtype != np.uint8:
+            affs = affs.astype(np.float32, copy=False)
         seg = self._read_chunk_seg(self._raw_chunk_path(chunk_key))
 
         # Apply global offset so IDs are unique across chunks
