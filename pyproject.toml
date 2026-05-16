@@ -30,6 +30,9 @@ classifiers = [
 ]
 dependencies = ["numpy>=1.20", "witty[cython]>=0.3.1"]
 
+[project.scripts]
+waterz_decode_large = "waterz.cli.decode_large:main"
+
 [project.urls]
 Homepage = "https://github.com/funkey/waterz"
 Repository = "https://github.com/funkey/waterz"

@@ -57,7 +57,9 @@ def build_chunk_grid(
 ) -> list[ChunkRef]:
     """Split a volume into chunk-aligned boxes in ZYX order."""
     if len(volume_shape) != 3 or len(chunk_shape) != 3:
-        raise ValueError("volume_shape and chunk_shape must both be length-3 ZYX tuples.")
+        raise ValueError(
+            "volume_shape and chunk_shape must both be length-3 ZYX tuples."
+        )
 
     z_chunks = ceil(int(volume_shape[0]) / int(chunk_shape[0]))
     y_chunks = ceil(int(volume_shape[1]) / int(chunk_shape[1]))
@@ -66,7 +68,9 @@ def build_chunk_grid(
     chunks: list[ChunkRef] = []
     for index in product(range(z_chunks), range(y_chunks), range(x_chunks)):
         start = tuple(index[i] * int(chunk_shape[i]) for i in range(3))
-        stop = tuple(min(start[i] + int(chunk_shape[i]), int(volume_shape[i])) for i in range(3))
+        stop = tuple(
+            min(start[i] + int(chunk_shape[i]), int(volume_shape[i])) for i in range(3)
+        )
         chunks.append(ChunkRef(index=index, start=start, stop=stop))
     return chunks
 
@@ -128,7 +132,11 @@ def build_large_decode_tasks(
             name="connect_border",
             stage="connect",
             key=border.key,
-            deps=(offsets_spec.task_id, f"decode:{border.src.key}", f"decode:{border.dst.key}"),
+            deps=(
+                offsets_spec.task_id,
+                f"decode:{border.src.key}",
+                f"decode:{border.dst.key}",
+            ),
             payload={
                 "axis": border.axis,
                 "src_chunk": border.src.key,
@@ -191,13 +199,17 @@ def build_chunk_grid_overlap(
     overlap : (Z, Y, X)  overlap per axis in voxels
     """
     if len(volume_shape) != 3 or len(chunk_shape) != 3 or len(overlap) != 3:
-        raise ValueError("volume_shape, chunk_shape, and overlap must all be length-3 ZYX tuples.")
+        raise ValueError(
+            "volume_shape, chunk_shape, and overlap must all be length-3 ZYX tuples."
+        )
 
     base_chunks = build_chunk_grid(volume_shape, chunk_shape)
     result: list[ChunkRef] = []
     for chunk in base_chunks:
         start = tuple(max(0, chunk.start[i] - int(overlap[i])) for i in range(3))
-        stop = tuple(min(int(volume_shape[i]), chunk.stop[i] + int(overlap[i])) for i in range(3))
+        stop = tuple(
+            min(int(volume_shape[i]), chunk.stop[i] + int(overlap[i])) for i in range(3)
+        )
         result.append(ChunkRef(index=chunk.index, start=start, stop=stop))
     return result
 
@@ -214,10 +226,12 @@ def build_large_decode_tasks_overlap(
     Stages:
     1. fragment_chunk (parallel) - watershed per chunk with overlap
     2. compute_offsets (serial) - assign globally unique fragment IDs
-    3. stitch_overlap (parallel) - consensus-match fragments in overlap zones
+    3. stitch_overlap (parallel) - write overlap equivalence pairs
     4. build_rg_chunk (parallel) - build scored region graph per chunk
+       independently of stitch_overlap
     5. merge_rg (serial) - weighted-mean merge of per-chunk region graphs
-    6. agglomerate (serial) - threshold merge on global region graph
+    6. agglomerate (serial) - threshold merge on global region graph plus
+       overlap equivalences
     7. apply_relabel (parallel) - apply global ID mapping to each chunk
     8. assemble_output (serial, optional) - write final volume
     """
@@ -251,6 +265,7 @@ def build_large_decode_tasks_overlap(
     tasks.append(offsets_spec)
 
     # Stage 3: stitch_overlap (parallel, depends on offsets + adjacent fragments)
+    # This writes pair artifacts only; it does not mutate chunk segmentations.
     stitch_ids: list[str] = []
     for border in borders:
         spec = TaskSpec(
@@ -271,15 +286,14 @@ def build_large_decode_tasks_overlap(
         tasks.append(spec)
         stitch_ids.append(spec.task_id)
 
-    # Stage 4: build_rg_chunk (parallel, depends on stitching + offsets)
+    # Stage 4: build_rg_chunk (parallel, independent from stitching)
     rg_ids: list[str] = []
-    stitch_deps = tuple(stitch_ids) if stitch_ids else (offsets_spec.task_id,)
     for chunk in chunks:
         spec = TaskSpec(
             name="build_rg_chunk",
             stage="build_rg",
             key=chunk.key,
-            deps=stitch_deps + (f"fragment:{chunk.key}",),
+            deps=(offsets_spec.task_id, f"fragment:{chunk.key}"),
             payload={"chunk_key": chunk.key},
         )
         tasks.append(spec)
@@ -294,12 +308,12 @@ def build_large_decode_tasks_overlap(
     )
     tasks.append(merge_rg_spec)
 
-    # Stage 6: agglomerate (serial, depends on merge_rg)
+    # Stage 6: agglomerate (serial, depends on merge_rg and overlap pairs)
     agglomerate_spec = TaskSpec(
         name="agglomerate",
         stage="agglomerate",
         key="global",
-        deps=(merge_rg_spec.task_id,),
+        deps=(merge_rg_spec.task_id, *stitch_ids),
     )
     tasks.append(agglomerate_spec)
 

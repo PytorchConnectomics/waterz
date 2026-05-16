@@ -147,7 +147,11 @@ class TaskRecord:
             created_at=str(data.get("created_at", _utc_now())),
             started_at=data.get("started_at"),
             finished_at=data.get("finished_at"),
-            result=dict(data["result"]) if isinstance(data.get("result"), dict) else data.get("result"),
+            result=(
+                dict(data["result"])
+                if isinstance(data.get("result"), dict)
+                else data.get("result")
+            ),
             error=data.get("error"),
         )
 
@@ -174,11 +178,16 @@ class WorkflowOrchestrator:
             self._write_record(TaskRecord(spec=spec))
 
     def list_records(self) -> list[TaskRecord]:
-        records = [self._load_record(path) for path in sorted(self.tasks_dir.glob("*.json"))]
+        records = []
+        for path in sorted(self.tasks_dir.glob("*.json")):
+            try:
+                records.append(self._load_record_retry(path))
+            except FileNotFoundError:
+                continue
         return sorted(records, key=lambda r: (r.spec.stage, r.spec.key, r.spec.name))
 
     def get_record(self, task_id: str) -> TaskRecord:
-        return self._load_record(self._record_path(task_id))
+        return self._load_record_retry(self._record_path(task_id))
 
     def claim_ready_task(
         self,
@@ -196,23 +205,35 @@ class WorkflowOrchestrator:
         for record in self.list_records():
             if record.state is not TaskState.PENDING:
                 continue
-            if allowed_name_set is not None and record.spec.name not in allowed_name_set:
+            if (
+                allowed_name_set is not None
+                and record.spec.name not in allowed_name_set
+            ):
                 continue
-            if allowed_stage_set is not None and record.spec.stage not in allowed_stage_set:
+            if (
+                allowed_stage_set is not None
+                and record.spec.stage not in allowed_stage_set
+            ):
                 continue
             if not self._deps_satisfied(record.spec.deps):
                 continue
-            claimed = self._claim_task(record.task_id, worker_id=worker_id, job_id=job_id)
+            claimed = self._claim_task(
+                record.task_id, worker_id=worker_id, job_id=job_id
+            )
             if claimed is not None:
                 return claimed
         return None
 
-    def complete_task(self, task_id: str, result: Optional[Dict[str, Any]] = None) -> TaskRecord:
+    def complete_task(
+        self, task_id: str, result: Optional[Dict[str, Any]] = None
+    ) -> TaskRecord:
         """Mark a running task as successful."""
         with self._task_lock(task_id):
             record = self.get_record(task_id)
             if record.state is not TaskState.RUNNING:
-                raise RuntimeError(f"Cannot complete task {task_id!r} in state {record.state.value!r}.")
+                raise RuntimeError(
+                    f"Cannot complete task {task_id!r} in state {record.state.value!r}."
+                )
             record.state = TaskState.SUCCEEDED
             record.result = result
             record.error = None
@@ -220,7 +241,9 @@ class WorkflowOrchestrator:
             self._write_record(record)
             return record
 
-    def force_complete(self, task_id: str, result: Optional[Dict[str, Any]] = None) -> bool:
+    def force_complete(
+        self, task_id: str, result: Optional[Dict[str, Any]] = None
+    ) -> bool:
         """Mark a task as succeeded regardless of current state. Returns True if changed."""
         with self._task_lock(task_id):
             record = self.get_record(task_id)
@@ -238,7 +261,9 @@ class WorkflowOrchestrator:
         with self._task_lock(task_id):
             record = self.get_record(task_id)
             if record.state is not TaskState.RUNNING:
-                raise RuntimeError(f"Cannot fail task {task_id!r} in state {record.state.value!r}.")
+                raise RuntimeError(
+                    f"Cannot fail task {task_id!r} in state {record.state.value!r}."
+                )
             record.state = TaskState.FAILED
             record.error = error
             record.finished_at = _utc_now()
@@ -340,7 +365,10 @@ class WorkflowOrchestrator:
             idle_started = None
             handler = handlers.get(record.spec.name)
             if handler is None:
-                self.fail_task(record.task_id, f"No handler registered for task {record.spec.name!r}.")
+                self.fail_task(
+                    record.task_id,
+                    f"No handler registered for task {record.spec.name!r}.",
+                )
                 raise KeyError(f"No handler registered for task {record.spec.name!r}.")
 
             print(f"[{worker_id}] {record.spec.stage}/{record.spec.key}", flush=True)
@@ -377,11 +405,14 @@ class WorkflowOrchestrator:
                 records = [record for record in records if record.task_id in selected]
 
             if fail_fast:
-                failures = [record for record in records if record.state is TaskState.FAILED]
+                failures = [
+                    record for record in records if record.state is TaskState.FAILED
+                ]
                 if failures:
                     failed = failures[0]
+                    error = failed.error or "unknown error"
                     raise RuntimeError(
-                        f"Workflow task {failed.task_id!r} failed: {failed.error or 'unknown error'}"
+                        f"Workflow task {failed.task_id!r} failed: {error}"
                     )
 
             if records and all(record.state.terminal for record in records):
@@ -401,7 +432,9 @@ class WorkflowOrchestrator:
         summary: Dict[str, Dict[str, int]] = {}
         for record in self.list_records():
             stage_summary = summary.setdefault(record.spec.stage, {})
-            stage_summary[record.state.value] = stage_summary.get(record.state.value, 0) + 1
+            stage_summary[record.state.value] = (
+                stage_summary.get(record.state.value, 0) + 1
+            )
         return summary
 
     def _record_path(self, task_id: str) -> Path:
@@ -413,6 +446,16 @@ class WorkflowOrchestrator:
     def _load_record(self, path: Path) -> TaskRecord:
         with path.open("r", encoding="utf-8") as handle:
             return TaskRecord.from_dict(json.load(handle))
+
+    def _load_record_retry(self, path: Path, attempts: int = 4) -> TaskRecord:
+        for attempt in range(attempts):
+            try:
+                return self._load_record(path)
+            except FileNotFoundError:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
+        raise FileNotFoundError(path)
 
     def _claim_task(
         self,

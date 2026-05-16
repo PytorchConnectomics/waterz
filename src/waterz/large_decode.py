@@ -15,12 +15,25 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
-from ._merge import get_region_graph, merge_function_to_scoring, merge_region_graphs, merge_segments
+from ._merge import (
+    get_region_graph,
+    merge_function_to_scoring,
+    merge_region_graphs,
+    merge_segments,
+)
 from ._waterz import waterz as _run_waterz
 from .face_merge import face_merge_pairs
-from .large_workflow import BorderRef, ChunkRef, build_border_adjacency, build_chunk_grid, build_chunk_grid_overlap, build_large_decode_tasks, build_large_decode_tasks_overlap
+from .large_workflow import (
+    BorderRef,
+    ChunkRef,
+    build_border_adjacency,
+    build_chunk_grid,
+    build_chunk_grid_overlap,
+    build_large_decode_tasks,
+    build_large_decode_tasks_overlap,
+)
 from .orchestrator import TaskRecord, WorkflowOrchestrator
-from .overlap_stitch import apply_overlap_remap, build_overlap_remap
+from .overlap_stitch import build_overlap_remap
 from .region_graph import merge_id
 
 __all__ = [
@@ -34,13 +47,17 @@ def _safe_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._-") or "artifact"
 
 
-def _normalize_thresholds(thresholds: Union[float, Sequence[float]]) -> tuple[float, ...]:
+def _normalize_thresholds(
+    thresholds: Union[float, Sequence[float]],
+) -> tuple[float, ...]:
     if isinstance(thresholds, (int, float)):
         return (float(thresholds),)
     return tuple(sorted(float(value) for value in thresholds))
 
 
-def _compression_kwargs(compression: Optional[str], compression_level: int) -> Dict[str, Any]:
+def _compression_kwargs(
+    compression: Optional[str], compression_level: int
+) -> Dict[str, Any]:
     if compression in (None, "", "none"):
         return {}
     kwargs: Dict[str, Any] = {"compression": compression}
@@ -54,7 +71,7 @@ def _unwrap_affinity_scoring(scoring_function: str) -> str:
     scoring_function = str(scoring_function)
     for prefix in ("OneMinus<", "One255Minus<"):
         if scoring_function.startswith(prefix) and scoring_function.endswith(">"):
-            return scoring_function[len(prefix):-1]
+            return scoring_function[len(prefix) : -1]
     return scoring_function
 
 
@@ -197,7 +214,11 @@ class LargeDecodeConfig:
             compression=data.get("compression", "gzip"),
             compression_level=int(data.get("compression_level", 4)),
             force_rebuild=bool(data.get("force_rebuild", False)),
-            volume_shape=(tuple(int(v) for v in data["volume_shape"]) if data.get("volume_shape") is not None else None),
+            volume_shape=(
+                tuple(int(v) for v in data["volume_shape"])
+                if data.get("volume_shape") is not None
+                else None
+            ),
             use_aff_uint8=bool(data.get("use_aff_uint8", False)),
             use_seg_uint32=bool(data.get("use_seg_uint32", False)),
             edge_offset=int(data.get("edge_offset", 1)),
@@ -291,14 +312,18 @@ class LargeDecodeRunner:
     @property
     def chunks(self) -> list[ChunkRef]:
         if self.config.volume_shape is None:
-            raise RuntimeError("LargeDecodeRunner is not initialized with a volume shape.")
+            raise RuntimeError(
+                "LargeDecodeRunner is not initialized with a volume shape."
+            )
         return build_chunk_grid(self.config.volume_shape, self.config.chunk_shape)
 
     @property
     def overlap_chunks(self) -> list[ChunkRef]:
         """Chunks with overlap extensions for the overlap pipeline."""
         if self.config.volume_shape is None:
-            raise RuntimeError("LargeDecodeRunner is not initialized with a volume shape.")
+            raise RuntimeError(
+                "LargeDecodeRunner is not initialized with a volume shape."
+            )
         return build_chunk_grid_overlap(
             self.config.volume_shape, self.config.chunk_shape, self.config.overlap
         )
@@ -335,10 +360,14 @@ class LargeDecodeRunner:
             self._write_config()
         if self._use_overlap_pipeline:
             tasks = build_large_decode_tasks_overlap(
-                self.chunks, self.borders, write_output=self.config.write_output,
+                self.chunks,
+                self.borders,
+                write_output=self.config.write_output,
             )
         else:
-            tasks = build_large_decode_tasks(self.chunks, write_output=self.config.write_output)
+            tasks = build_large_decode_tasks(
+                self.chunks, write_output=self.config.write_output
+            )
         self.orchestrator.register(tasks)
 
     def handlers(self) -> Dict[str, Any]:
@@ -351,13 +380,15 @@ class LargeDecodeRunner:
             "assemble_output": self.handle_assemble_output,
         }
         if self._use_overlap_pipeline:
-            h.update({
-                "fragment_chunk": self.handle_fragment_chunk,
-                "stitch_overlap": self.handle_stitch_overlap,
-                "build_rg_chunk": self.handle_build_rg_chunk,
-                "merge_rg": self.handle_merge_rg,
-                "agglomerate": self.handle_agglomerate,
-            })
+            h.update(
+                {
+                    "fragment_chunk": self.handle_fragment_chunk,
+                    "stitch_overlap": self.handle_stitch_overlap,
+                    "build_rg_chunk": self.handle_build_rg_chunk,
+                    "merge_rg": self.handle_merge_rg,
+                    "agglomerate": self.handle_agglomerate,
+                }
+            )
         return h
 
     def run_serial(
@@ -425,7 +456,8 @@ class LargeDecodeRunner:
         # Scale float [0,1] parameters to [0,255] for uint8, matching decode_waterz
         thresholds = scale_thresholds(self.config.thresholds, is_uint8)
         aff_low, aff_high = scale_aff_threshold(
-            (self.config.aff_threshold_low, self.config.aff_threshold_high), is_uint8,
+            (self.config.aff_threshold_low, self.config.aff_threshold_high),
+            is_uint8,
         )
 
         waterz_kwargs = dict(
@@ -462,8 +494,10 @@ class LargeDecodeRunner:
         # Dust merge using agglomeration's region graph (cached scores, no re-scoring)
         if do_dust:
             from ._merge import dust_merge_from_region_graph
+
             dust_merge_from_region_graph(
-                seg, region_graph,
+                seg,
+                region_graph,
                 is_uint8=is_uint8,
                 size_th=self.config.dust_merge_size,
                 weight_th=self.config.dust_merge_affinity,
@@ -517,8 +551,12 @@ class LargeDecodeRunner:
             src_face = np.load(src_npy).astype(np.uint64, copy=False)
             dst_face = np.load(dst_npy).astype(np.uint64, copy=False)
         else:
-            src_face = self._read_chunk_face(self._raw_chunk_path(border.src.key), border.axis, side="src")
-            dst_face = self._read_chunk_face(self._raw_chunk_path(border.dst.key), border.axis, side="dst")
+            src_face = self._read_chunk_face(
+                self._raw_chunk_path(border.src.key), border.axis, side="src"
+            )
+            dst_face = self._read_chunk_face(
+                self._raw_chunk_path(border.dst.key), border.axis, side="dst"
+            )
 
         src_offset = int(offsets["chunk_offsets"][border.src.key])
         dst_offset = int(offsets["chunk_offsets"][border.dst.key])
@@ -531,7 +569,9 @@ class LargeDecodeRunner:
 
         aff = self._read_boundary_affinity(border)
         pairs = face_merge_pairs(
-            src_face, dst_face, aff,
+            src_face,
+            dst_face,
+            aff,
             min_overlap=self.config.min_overlap,
             iou_threshold=float(self.config.iou_threshold),
             one_sided_threshold=float(self.config.one_sided_threshold),
@@ -574,6 +614,16 @@ class LargeDecodeRunner:
             mask = seg > 0
             seg[mask] += offset
         seg = relabel[seg]
+        if self._use_overlap_pipeline:
+            ov_chunk = self.overlap_chunk_map[chunk.key]
+            base_local = tuple(
+                slice(
+                    chunk.start[i] - ov_chunk.start[i],
+                    chunk.stop[i] - ov_chunk.start[i],
+                )
+                for i in range(3)
+            )
+            seg = seg[base_local]
         path = self._final_chunk_path(chunk.key)
         self._write_chunk_seg(path, seg)
         return {"chunk_path": str(path), "max_id": int(seg.max())}
@@ -584,7 +634,9 @@ class LargeDecodeRunner:
         h5py = _require_h5py()
         shape = tuple(int(v) for v in self.config.volume_shape or ())
         chunk_shape = tuple(min(shape[i], self.config.chunk_shape[i]) for i in range(3))
-        kwargs = _compression_kwargs(self.config.compression, self.config.compression_level)
+        kwargs = _compression_kwargs(
+            self.config.compression, self.config.compression_level
+        )
         with h5py.File(output_path, "w") as handle:
             dataset = handle.create_dataset(
                 self.config.output_dataset,
@@ -596,9 +648,9 @@ class LargeDecodeRunner:
             for chunk in self.chunks:
                 seg = self._read_chunk_seg(self._final_chunk_path(chunk.key))
                 dataset[
-                    chunk.start[0]:chunk.stop[0],
-                    chunk.start[1]:chunk.stop[1],
-                    chunk.start[2]:chunk.stop[2],
+                    chunk.start[0] : chunk.stop[0],
+                    chunk.start[1] : chunk.stop[1],
+                    chunk.start[2] : chunk.stop[2],
                 ] = seg
         return {"output_path": str(output_path)}
 
@@ -704,13 +756,11 @@ class LargeDecodeRunner:
         }
 
     def handle_stitch_overlap(self, record: TaskRecord) -> Dict[str, Any]:
-        """Consensus-match fragment IDs in overlap zone between adjacent chunks."""
+        """Write global ID equivalence pairs for one overlap zone."""
         border_key = record.spec.key
         border = self.border_map[border_key]
         src_ov = self.overlap_chunk_map[border.src.key]
         dst_ov = self.overlap_chunk_map[border.dst.key]
-        src_base = self.chunk_map[border.src.key]
-        dst_base = self.chunk_map[border.dst.key]
 
         src_seg = self._read_chunk_seg(self._raw_chunk_path(border.src.key))
         dst_seg = self._read_chunk_seg(self._raw_chunk_path(border.dst.key))
@@ -720,27 +770,50 @@ class LargeDecodeRunner:
         ovl_stop = tuple(min(src_ov.stop[i], dst_ov.stop[i]) for i in range(3))
 
         # Convert to local chunk coordinates
-        src_local = tuple(slice(ovl_start[i] - src_ov.start[i], ovl_stop[i] - src_ov.start[i]) for i in range(3))
-        dst_local = tuple(slice(ovl_start[i] - dst_ov.start[i], ovl_stop[i] - dst_ov.start[i]) for i in range(3))
+        src_local = tuple(
+            slice(ovl_start[i] - src_ov.start[i], ovl_stop[i] - src_ov.start[i])
+            for i in range(3)
+        )
+        dst_local = tuple(
+            slice(ovl_start[i] - dst_ov.start[i], ovl_stop[i] - dst_ov.start[i])
+            for i in range(3)
+        )
 
         overlap_src = src_seg[src_local]
         overlap_dst = dst_seg[dst_local]
 
-        remap = build_overlap_remap(overlap_src, overlap_dst)
-        apply_overlap_remap(dst_seg, remap)
+        offsets = self._read_json(self._offsets_path())
+        src_offset = int(offsets["chunk_offsets"][border.src.key])
+        dst_offset = int(offsets["chunk_offsets"][border.dst.key])
+        if src_offset:
+            overlap_src = overlap_src.copy()
+            src_mask = overlap_src > 0
+            overlap_src[src_mask] += src_offset
+        if dst_offset:
+            overlap_dst = overlap_dst.copy()
+            dst_mask = overlap_dst > 0
+            overlap_dst[dst_mask] += dst_offset
 
-        # Write back the remapped dst segmentation
-        path = self._raw_chunk_path(border.dst.key)
-        self._write_chunk_seg(path, dst_seg)
-        return {"border_key": border_key, "num_remapped": len(remap)}
+        remap = build_overlap_remap(overlap_src, overlap_dst)
+        if remap:
+            pairs = np.asarray(list(remap.items()), dtype=np.uint64)
+        else:
+            pairs = np.empty((0, 2), dtype=np.uint64)
+
+        path = self._stitch_path(border_key)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        np.save(path, pairs)
+        return {
+            "border_key": border_key,
+            "pair_path": str(path),
+            "num_pairs": len(pairs),
+        }
 
     def handle_build_rg_chunk(self, record: TaskRecord) -> Dict[str, Any]:
         """Build scored region graph with contact areas for one chunk."""
         os.environ.setdefault("CCACHE_DISABLE", "1")
         chunk_key = record.spec.key
         ov_chunk = self.overlap_chunk_map[chunk_key]
-        base_chunk = self.chunk_map[chunk_key]
-
         affs = self._read_affinity_chunk(ov_chunk)
         seg = self._read_chunk_seg(self._raw_chunk_path(chunk_key))
 
@@ -752,8 +825,11 @@ class LargeDecodeRunner:
             seg[mask] += offset
 
         from ._merge import get_region_graph_rich
+
         rg_affs, id1, id2, contact_areas = get_region_graph_rich(
-            seg, affs, scoring_function=self.config.affinity_scoring_function,
+            seg,
+            affs,
+            scoring_function=self.config.affinity_scoring_function,
         )
 
         path = self._rg_chunk_path(chunk_key)
@@ -767,12 +843,14 @@ class LargeDecodeRunner:
         for chunk in self.chunks:
             path = self._rg_chunk_path(chunk.key)
             data = np.load(path)
-            rg_list.append((
-                data["rg_affs"],
-                data["id1"],
-                data["id2"],
-                data["contact_areas"],
-            ))
+            rg_list.append(
+                (
+                    data["rg_affs"],
+                    data["id1"],
+                    data["id2"],
+                    data["contact_areas"],
+                )
+            )
 
         merged_affs, merged_id1, merged_id2, merged_areas = merge_region_graphs(rg_list)
 
@@ -788,7 +866,7 @@ class LargeDecodeRunner:
         return {"merged_rg_path": str(path), "num_edges": len(merged_affs)}
 
     def handle_agglomerate(self, record: TaskRecord) -> Dict[str, Any]:
-        """Threshold merge on the global merged region graph."""
+        """Threshold merge on the global region graph plus overlap pairs."""
         data = np.load(self._merged_rg_path())
         rg_affs = data["rg_affs"]
         id1 = data["id1"]
@@ -797,37 +875,39 @@ class LargeDecodeRunner:
         offsets = self._read_json(self._offsets_path())
         global_max_id = int(offsets["global_max_id"])
 
-        # Build global counts from all chunks
-        counts = np.zeros(global_max_id + 1, dtype=np.uint64)
-        for chunk in self.chunks:
-            seg = self._read_chunk_seg(self._raw_chunk_path(chunk.key))
-            chunk_offset = int(offsets["chunk_offsets"][chunk.key])
-            if chunk_offset:
-                mask = seg > 0
-                seg[mask] += chunk_offset
-            ids, cnts = np.unique(seg, return_counts=True)
-            valid = ids <= global_max_id
-            np.add.at(counts, ids[valid], cnts[valid].astype(np.uint64))
-
         # Use the highest threshold
         threshold = max(self.config.thresholds)
 
-        # Merge: edges with affinity >= threshold
-        # merge_segments expects sorted descending, which merge_region_graphs provides
-        # Build a dummy seg volume (we only need the relabel mapping)
-        # Instead, compute the mapping via merge_id on qualifying edges
+        merge_id1: list[np.ndarray] = []
+        merge_id2: list[np.ndarray] = []
+
+        # Merge region-graph edges with affinity >= threshold.
         qualify = rg_affs >= threshold
         if qualify.any():
-            q_id1 = id1[qualify]
-            q_id2 = id2[qualify]
-            # Add sentinel to ensure array covers global_max_id
+            merge_id1.append(id1[qualify])
+            merge_id2.append(id2[qualify])
+
+        n_stitch_pairs = 0
+        for border in self.borders:
+            path = self._stitch_path(border.key)
+            if not path.exists():
+                continue
+            pairs = np.load(path).astype(np.uint64, copy=False)
+            if pairs.size == 0:
+                continue
+            pairs = pairs.reshape(-1, 2)
+            n_stitch_pairs += int(len(pairs))
+            merge_id1.append(pairs[:, 0])
+            merge_id2.append(pairs[:, 1])
+
+        if merge_id1:
             sentinel = np.array([global_max_id], dtype=np.uint64)
-            all_id1 = np.concatenate([q_id1, sentinel])
-            all_id2 = np.concatenate([q_id2, sentinel])
+            all_id1 = np.concatenate([*merge_id1, sentinel])
+            all_id2 = np.concatenate([*merge_id2, sentinel])
             roots = merge_id(all_id1, all_id2)
             if len(roots) < global_max_id + 1:
                 padded = np.arange(global_max_id + 1, dtype=np.uint64)
-                padded[:len(roots)] = roots
+                padded[: len(roots)] = roots
                 roots = padded
         else:
             roots = np.arange(global_max_id + 1, dtype=np.uint64)
@@ -844,6 +924,8 @@ class LargeDecodeRunner:
             "relabel_path": str(relabel_path),
             "global_max_id": global_max_id,
             "final_max_id": int(mapping.max()) if mapping.size else 0,
+            "num_rg_edges": int(np.count_nonzero(qualify)),
+            "num_stitch_pairs": n_stitch_pairs,
         }
 
     def _discover_volume_shape(self) -> tuple[int, int, int]:
@@ -873,6 +955,9 @@ class LargeDecodeRunner:
 
     def _connect_path(self, border_key: str) -> Path:
         return self.root / "connect" / f"{_safe_name(border_key)}.npy"
+
+    def _stitch_path(self, border_key: str) -> Path:
+        return self.root / "stitch" / f"{_safe_name(border_key)}.npy"
 
     def _offsets_path(self) -> Path:
         return self.root / "artifacts" / "offsets.json"
@@ -906,9 +991,9 @@ class LargeDecodeRunner:
                 affs = np.array(
                     dataset[
                         0:3,
-                        chunk.start[0]:chunk.stop[0],
-                        chunk.start[1]:chunk.stop[1],
-                        chunk.start[2]:chunk.stop[2],
+                        chunk.start[0] : chunk.stop[0],
+                        chunk.start[1] : chunk.stop[1],
+                        chunk.start[2] : chunk.stop[2],
                     ],
                 )
                 self._apply_affinity_mask(
@@ -925,9 +1010,9 @@ class LargeDecodeRunner:
                 ext_affs = np.array(
                     dataset[
                         0:3,
-                        chunk.start[0] - extra[0]:chunk.stop[0],
-                        chunk.start[1] - extra[1]:chunk.stop[1],
-                        chunk.start[2] - extra[2]:chunk.stop[2],
+                        chunk.start[0] - extra[0] : chunk.stop[0],
+                        chunk.start[1] - extra[1] : chunk.stop[1],
+                        chunk.start[2] - extra[2] : chunk.stop[2],
                     ],
                 )
                 self._apply_affinity_mask(
@@ -945,9 +1030,7 @@ class LargeDecodeRunner:
                         if i == c and extra[c] == 1:
                             slicer.append(slice(0, chunk_dims[i]))
                         else:
-                            slicer.append(
-                                slice(extra[i], extra[i] + chunk_dims[i])
-                            )
+                            slicer.append(slice(extra[i], extra[i] + chunk_dims[i]))
                     chan_3d = ext_affs[tuple(slicer)]
                     if extra[c] == 0:
                         # Global low boundary along axis c: roll +1, zero v=0.
@@ -1006,9 +1089,9 @@ class LargeDecodeRunner:
                 )
             mask = np.array(
                 mask_dataset[
-                    int(start[0]):int(stop[0]),
-                    int(start[1]):int(stop[1]),
-                    int(start[2]):int(stop[2]),
+                    int(start[0]) : int(stop[0]),
+                    int(start[1]) : int(stop[1]),
+                    int(start[2]) : int(stop[2]),
                 ],
             )
         finally:
@@ -1031,28 +1114,30 @@ class LargeDecodeRunner:
         # (dst.start - 1). Destination-stored waterz native: at dst.start.
         edge_offset = int(self.config.edge_offset)
         axis_index = {"z": 0, "y": 1, "x": 2}[border.axis]
-        boundary_pos = int(border.dst.start[axis_index]) - (1 if edge_offset == 0 else 0)
+        boundary_pos = int(border.dst.start[axis_index]) - (
+            1 if edge_offset == 0 else 0
+        )
         with h5py.File(self.config.affinity_path, "r") as handle:
             dataset = handle[self.config.affinity_dataset]
             if border.axis == "z":
                 data = dataset[
                     channel_index,
                     boundary_pos,
-                    border.src.start[1]:border.src.stop[1],
-                    border.src.start[2]:border.src.stop[2],
+                    border.src.start[1] : border.src.stop[1],
+                    border.src.start[2] : border.src.stop[2],
                 ]
             elif border.axis == "y":
                 data = dataset[
                     channel_index,
-                    border.src.start[0]:border.src.stop[0],
+                    border.src.start[0] : border.src.stop[0],
                     boundary_pos,
-                    border.src.start[2]:border.src.stop[2],
+                    border.src.start[2] : border.src.stop[2],
                 ]
             else:
                 data = dataset[
                     channel_index,
-                    border.src.start[0]:border.src.stop[0],
-                    border.src.start[1]:border.src.stop[1],
+                    border.src.start[0] : border.src.stop[0],
+                    border.src.start[1] : border.src.stop[1],
                     boundary_pos,
                 ]
             arr = np.array(data)
@@ -1062,22 +1147,24 @@ class LargeDecodeRunner:
                     if border.axis == "z":
                         mask_data = mask_dataset[
                             boundary_pos,
-                            border.src.start[1]:border.src.stop[1],
-                            border.src.start[2]:border.src.stop[2],
+                            border.src.start[1] : border.src.stop[1],
+                            border.src.start[2] : border.src.stop[2],
                         ]
                     elif border.axis == "y":
                         mask_data = mask_dataset[
-                            border.src.start[0]:border.src.stop[0],
+                            border.src.start[0] : border.src.stop[0],
                             boundary_pos,
-                            border.src.start[2]:border.src.stop[2],
+                            border.src.start[2] : border.src.stop[2],
                         ]
                     else:
                         mask_data = mask_dataset[
-                            border.src.start[0]:border.src.stop[0],
-                            border.src.start[1]:border.src.stop[1],
+                            border.src.start[0] : border.src.stop[0],
+                            border.src.start[1] : border.src.stop[1],
                             boundary_pos,
                         ]
-                    zero_idx = ~mask_data if mask_data.dtype == np.bool_ else (mask_data == 0)
+                    zero_idx = (
+                        ~mask_data if mask_data.dtype == np.bool_ else (mask_data == 0)
+                    )
                     if np.asarray(zero_idx).any():
                         arr[zero_idx] = 0
                 finally:
@@ -1086,7 +1173,9 @@ class LargeDecodeRunner:
                 return arr.astype(np.float32) / 255.0
             return np.asarray(arr, dtype=np.float32)
 
-    def _write_chunk_seg(self, path: Path, seg: np.ndarray, *, compress: bool = False) -> None:
+    def _write_chunk_seg(
+        self, path: Path, seg: np.ndarray, *, compress: bool = False
+    ) -> None:
         h5py = _require_h5py()
         path.parent.mkdir(parents=True, exist_ok=True)
         kwargs = (
@@ -1096,7 +1185,9 @@ class LargeDecodeRunner:
         )
         with h5py.File(path, "w") as handle:
             handle.create_dataset("main", data=seg, dtype=seg.dtype, **kwargs)
-            handle.create_dataset("max", data=np.asarray(int(seg.max()), dtype=np.uint64))
+            handle.create_dataset(
+                "max", data=np.asarray(int(seg.max()), dtype=np.uint64)
+            )
 
     def _read_chunk_seg(self, path: Path) -> np.ndarray:
         h5py = _require_h5py()
@@ -1144,7 +1235,7 @@ class LargeDecodeRunner:
             roots = merge_id(id1, id2)
             if len(roots) < global_max_id + 1:
                 padded = np.arange(global_max_id + 1, dtype=np.uint64)
-                padded[:len(roots)] = roots
+                padded[: len(roots)] = roots
                 roots = padded
 
         mapping = np.zeros(global_max_id + 1, dtype=np.uint64)
