@@ -167,6 +167,22 @@ WaterzState initialize(
 		AffValue        affThresholdHigh = 0.9999,
 		bool            findFragments = true);
 
+/**
+ * Run only waterz's 3D watershed initialization.
+ *
+ * This writes fragment IDs into segmentation_data using the same watershed
+ * step as initialize(..., findFragments=true), but does not build a region
+ * graph, statistics provider, or RegionMerging state.
+ */
+std::size_t buildFragmentsOnly(
+		std::size_t     width,
+		std::size_t     height,
+		std::size_t     depth,
+		const AffValue* affinity_data,
+		SegID*          segmentation_data,
+		AffValue        affThresholdLow  = 0.0001,
+		AffValue        affThresholdHigh = 0.9999);
+
 std::vector<Merge> mergeUntil(
 		WaterzState& state,
 		ScoreValue   threshold);

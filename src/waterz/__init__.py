@@ -7,7 +7,7 @@ try:
 except PackageNotFoundError:  # pragma: no cover
     __version__ = "uninstalled"
 
-from ._agglomerate import agglomerate, build_region_graph_rich
+from ._agglomerate import agglomerate, build_region_graph_rich, initialize_fragments_3d
 from ._merge import dust_merge_from_region_graph, get_region_graph, get_region_graph_rich, merge_dust, merge_function_to_scoring, merge_region_graphs, merge_segments, strip_boundary
 from ._uint8 import float_to_uint8, prepare_affinities, scale_aff_threshold, scale_thresholds
 from ._waterz import waterz
@@ -50,6 +50,7 @@ __all__ = [
     "float_to_uint8",
     "get_region_graph",
     "get_region_graph_rich",
+    "initialize_fragments_3d",
     "merge_dust",
     "merge_function_to_scoring",
     "merge_id",

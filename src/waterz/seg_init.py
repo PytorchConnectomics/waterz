@@ -1,7 +1,7 @@
 """2D slice-by-slice watershed for initial fragment generation.
 
-Alternative to waterz's built-in C++ watershed, useful for anisotropic
-EM volumes where z-resolution is much coarser than xy-resolution.
+Opt-in alternative to waterz's built-in 3D C++ watershed, useful for
+anisotropic EM volumes where z-resolution is much coarser than xy-resolution.
 
 Uses mahotas.cwatershed (fast C implementation, float input).
 """

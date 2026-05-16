@@ -5,6 +5,19 @@ import numpy as np
 import waterz as wz
 
 
+def _canonical_labels(seg: np.ndarray) -> np.ndarray:
+    _, inverse = np.unique(seg, return_inverse=True)
+    return inverse.reshape(seg.shape)
+
+
+def _two_z_regions_affinity(dtype=np.float32) -> np.ndarray:
+    affs = np.ones((3, 6, 8, 8), dtype=np.float32)
+    affs[0, 3, :, :] = 0.0
+    if dtype == np.uint8:
+        return (affs * 255).astype(np.uint8)
+    return affs.astype(dtype)
+
+
 def test_evaluate() -> None:
     np.random.seed(0)
     seg = np.random.randint(500, size=(3, 3, 3), dtype=np.uint64)
@@ -92,11 +105,64 @@ def test_waterz_as_dict_preserves_tuple_results() -> None:
     segmentation, region_graph = actual[0.0]
     assert isinstance(segmentation, np.ndarray)
     assert segmentation.shape == (2, 2, 2)
-    assert isinstance(region_graph, list)
-    assert region_graph
+    assert isinstance(region_graph, tuple)
+    assert len(region_graph) == 3
+    assert len(region_graph[0]) > 0
 
 
 def test_merge_function_to_scoring_accepts_affmean_alias() -> None:
     assert wz.merge_function_to_scoring("affmean") == (
         "OneMinus<MeanAffinity<RegionGraphType, ScoreValue>>"
     )
+
+
+def test_initialize_fragments_3d_connects_across_z() -> None:
+    affs = _two_z_regions_affinity()
+
+    seg, n_fragments = wz.initialize_fragments_3d(
+        affs,
+        aff_threshold_low=0.3,
+        aff_threshold_high=0.999,
+        force_rebuild=True,
+    )
+
+    assert seg.shape == (6, 8, 8)
+    assert seg.dtype == np.uint64
+    assert n_fragments == 2
+    assert len(np.unique(seg)) == 2
+    assert np.all(seg[:3] == seg[0, 0, 0])
+    assert np.all(seg[3:] == seg[3, 0, 0])
+    assert seg[0, 0, 0] != seg[3, 0, 0]
+
+
+def test_initialize_fragments_3d_uint32_dtype() -> None:
+    affs = _two_z_regions_affinity()
+
+    seg, n_fragments = wz.initialize_fragments_3d(
+        affs,
+        aff_threshold_low=0.3,
+        aff_threshold_high=0.999,
+        seg_dtype="uint32",
+    )
+
+    assert seg.dtype == np.uint32
+    assert n_fragments == 2
+
+
+def test_initialize_fragments_3d_uint8_matches_float32_topology() -> None:
+    affs_f32 = _two_z_regions_affinity()
+    affs_u8 = _two_z_regions_affinity(np.uint8)
+
+    seg_f32, n_f32 = wz.initialize_fragments_3d(
+        affs_f32,
+        aff_threshold_low=0.3,
+        aff_threshold_high=0.999,
+    )
+    seg_u8, n_u8 = wz.initialize_fragments_3d(
+        affs_u8,
+        aff_threshold_low=77,
+        aff_threshold_high=255,
+    )
+
+    assert n_u8 == n_f32 == 2
+    np.testing.assert_array_equal(_canonical_labels(seg_u8), _canonical_labels(seg_f32))

@@ -145,6 +145,15 @@ cdef extern from "frontend_agglomerate.h":
             float           affThresholdHigh,
             bool            findFragments);
 
+    size_t c_buildFragmentsOnly "buildFragmentsOnly" (
+            size_t          width,
+            size_t          height,
+            size_t          depth,
+            const float*    affinity_data,
+            uint64_t*       segmentation_data,
+            float           affThresholdLow,
+            float           affThresholdHigh)
+
     vector[Merge] mergeUntil(
             WaterzState& state,
             float        threshold)
@@ -166,6 +175,33 @@ cdef extern from "frontend_agglomerate.h":
             uint64_t*       segmentation_data)
 
     void free(WaterzState& state)
+
+
+def buildFragmentsOnly(
+        np.ndarray[np.float32_t, ndim=4] affs,
+        aff_threshold_low=0.0001,
+        aff_threshold_high=0.9999):
+    """Run waterz's 3D watershed initialization without region graph work."""
+    if not affs.flags['C_CONTIGUOUS']:
+        affs = np.ascontiguousarray(affs)
+
+    cdef size_t width = affs.shape[1]
+    cdef size_t height = affs.shape[2]
+    cdef size_t depth = affs.shape[3]
+    cdef np.ndarray[uint64_t, ndim=3] seg = np.zeros((width, height, depth), dtype=np.uint64)
+    cdef float* aff_data = &affs[0,0,0,0]
+    cdef uint64_t* seg_data = &seg[0,0,0]
+
+    cdef size_t n_fragments = c_buildFragmentsOnly(
+        width,
+        height,
+        depth,
+        aff_data,
+        seg_data,
+        aff_threshold_low,
+        aff_threshold_high)
+
+    return seg, int(n_fragments)
 
 
 def buildRegionGraphOnly(

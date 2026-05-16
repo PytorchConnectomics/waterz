@@ -15,7 +15,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence, Union
 
 import numpy as np
 
-from ._merge import merge_function_to_scoring, merge_region_graphs, merge_segments
+from ._merge import get_region_graph, merge_function_to_scoring, merge_region_graphs, merge_segments
 from ._waterz import waterz as _run_waterz
 from .face_merge import face_merge_pairs
 from .large_workflow import BorderRef, ChunkRef, build_border_adjacency, build_chunk_grid, build_chunk_grid_overlap, build_large_decode_tasks, build_large_decode_tasks_overlap
@@ -49,6 +49,15 @@ def _compression_kwargs(compression: Optional[str], compression_level: int) -> D
     return kwargs
 
 
+def _unwrap_affinity_scoring(scoring_function: str) -> str:
+    """Return raw-affinity scoring from waterz's merge-score wrapper."""
+    scoring_function = str(scoring_function)
+    for prefix in ("OneMinus<", "One255Minus<"):
+        if scoring_function.startswith(prefix) and scoring_function.endswith(">"):
+            return scoring_function[len(prefix):-1]
+    return scoring_function
+
+
 def _require_h5py():
     import h5py
 
@@ -61,8 +70,12 @@ class LargeDecodeConfig:
     workflow_root: str
     chunk_shape: tuple[int, int, int]
     affinity_dataset: str = "main"
+    affinity_mask_path: str = ""
+    affinity_mask_dataset: str = "main"
     thresholds: tuple[float, ...] = (0.3,)
     merge_function: str = "aff50_his256"
+    chunk_affinity_threshold: float = 1.0
+    fragment_init: str = "waterz"
     aff_threshold_low: float = 0.0001
     aff_threshold_high: float = 0.9999
     channel_order: str = "zyx"
@@ -88,16 +101,30 @@ class LargeDecodeConfig:
     volume_shape: Optional[tuple[int, int, int]] = None
     use_aff_uint8: bool = False
     use_seg_uint32: bool = False
+    edge_offset: int = 1
 
     def __post_init__(self) -> None:
         self.affinity_path = str(Path(self.affinity_path))
         self.workflow_root = str(Path(self.workflow_root))
+        if self.affinity_mask_path:
+            self.affinity_mask_path = str(Path(self.affinity_mask_path))
         self.chunk_shape = tuple(int(v) for v in self.chunk_shape)
         self.overlap = tuple(int(v) for v in self.overlap)
         self.thresholds = _normalize_thresholds(self.thresholds)
+        self.chunk_affinity_threshold = float(self.chunk_affinity_threshold)
+        if not 0.0 <= self.chunk_affinity_threshold <= 1.0:
+            raise ValueError("chunk_affinity_threshold must be in [0, 1].")
+        self.fragment_init = str(self.fragment_init).lower()
+        if self.fragment_init not in {"waterz", "2d"}:
+            raise ValueError("fragment_init must be 'waterz' or '2d'.")
         self.channel_order = str(self.channel_order).lower()
         if self.channel_order not in {"zyx", "xyz"}:
             raise ValueError("channel_order must be 'zyx' or 'xyz'.")
+        self.edge_offset = int(self.edge_offset)
+        if self.edge_offset not in (0, 1):
+            raise ValueError(
+                "edge_offset must be 0 (BANIS source-stored) or 1 (waterz destination-stored)."
+            )
         if self.output_path is not None:
             self.output_path = str(Path(self.output_path))
         if self.volume_shape is not None:
@@ -106,6 +133,10 @@ class LargeDecodeConfig:
     @property
     def scoring_function(self) -> str:
         return merge_function_to_scoring(self.merge_function)
+
+    @property
+    def affinity_scoring_function(self) -> str:
+        return _unwrap_affinity_scoring(self.scoring_function)
 
     @property
     def resolved_output_path(self) -> Path:
@@ -138,8 +169,12 @@ class LargeDecodeConfig:
             workflow_root=str(data["workflow_root"]),
             chunk_shape=tuple(int(v) for v in data["chunk_shape"]),
             affinity_dataset=str(data.get("affinity_dataset", "main")),
+            affinity_mask_path=str(data.get("affinity_mask_path", "")),
+            affinity_mask_dataset=str(data.get("affinity_mask_dataset", "main")),
             thresholds=tuple(float(v) for v in thresholds),
             merge_function=str(data.get("merge_function", "aff50_his256")),
+            chunk_affinity_threshold=float(data.get("chunk_affinity_threshold", 1.0)),
+            fragment_init=str(data.get("fragment_init", "waterz")),
             aff_threshold_low=float(data.get("aff_threshold_low", 0.0001)),
             aff_threshold_high=float(data.get("aff_threshold_high", 0.9999)),
             channel_order=str(data.get("channel_order", "zyx")),
@@ -165,6 +200,7 @@ class LargeDecodeConfig:
             volume_shape=(tuple(int(v) for v in data["volume_shape"]) if data.get("volume_shape") is not None else None),
             use_aff_uint8=bool(data.get("use_aff_uint8", False)),
             use_seg_uint32=bool(data.get("use_seg_uint32", False)),
+            edge_offset=int(data.get("edge_offset", 1)),
         )
 
 
@@ -187,10 +223,15 @@ class LargeDecodeRunner:
         chunk_shape: Sequence[int],
         thresholds: Union[float, Sequence[float]] = 0.3,
         merge_function: str = "aff50_his256",
+        chunk_affinity_threshold: float = 1.0,
+        fragment_init: str = "waterz",
         affinity_dataset: str = "main",
+        affinity_mask_path: str = "",
+        affinity_mask_dataset: str = "main",
         aff_threshold_low: float = 0.0001,
         aff_threshold_high: float = 0.9999,
         channel_order: str = "zyx",
+        edge_offset: int = 1,
         write_output: bool = False,
         output_path: Optional[str] = None,
         output_dataset: str = "main",
@@ -209,11 +250,16 @@ class LargeDecodeRunner:
             workflow_root=str(workflow_root),
             chunk_shape=tuple(int(v) for v in chunk_shape),
             affinity_dataset=str(affinity_dataset),
+            affinity_mask_path=str(affinity_mask_path),
+            affinity_mask_dataset=str(affinity_mask_dataset),
             thresholds=_normalize_thresholds(thresholds),
             merge_function=str(merge_function),
+            chunk_affinity_threshold=float(chunk_affinity_threshold),
+            fragment_init=str(fragment_init),
             aff_threshold_low=float(aff_threshold_low),
             aff_threshold_high=float(aff_threshold_high),
             channel_order=str(channel_order),
+            edge_offset=int(edge_offset),
             write_output=bool(write_output),
             output_path=str(output_path) if output_path is not None else None,
             output_dataset=str(output_dataset),
@@ -561,20 +607,101 @@ class LargeDecodeRunner:
     # ------------------------------------------------------------------
 
     def handle_fragment_chunk(self, record: TaskRecord) -> Dict[str, Any]:
-        """Watershed per chunk with overlap — no agglomeration."""
+        """Initialize fragments per chunk, then optional strong-edge premerge."""
         os.environ.setdefault("CCACHE_DISABLE", "1")
+
         chunk_key = record.spec.key
         ov_chunk = self.overlap_chunk_map[chunk_key]
         affs = self._read_affinity_chunk(ov_chunk)
 
-        from .seg_init import compute_fragments
-        seg = compute_fragments(
-            affs,
-            aff_threshold_low=self.config.aff_threshold_low,
-        )
+        is_uint8 = affs.dtype == np.uint8
+        if not is_uint8:
+            affs = affs.astype(np.float32, copy=False)
+
+        if self.config.fragment_init == "2d":
+            from .seg_init import compute_fragments
+
+            seg = compute_fragments(
+                affs,
+                seed_method=self.config.seed_method,
+                aff_threshold_low=self.config.aff_threshold_low,
+            )
+            n_fragments = int(seg.max()) if seg.size else 0
+        else:
+            from ._agglomerate import initialize_fragments_3d
+            from ._uint8 import scale_aff_threshold
+
+            aff_low, aff_high = scale_aff_threshold(
+                (self.config.aff_threshold_low, self.config.aff_threshold_high),
+                is_uint8,
+            )
+            seg, n_fragments = initialize_fragments_3d(
+                affs,
+                aff_threshold_low=aff_low,
+                aff_threshold_high=aff_high,
+                seg_dtype="uint32" if self.config.use_seg_uint32 else "uint64",
+                force_rebuild=self.config.force_rebuild,
+            )
+        seg = np.asarray(seg, dtype=np.uint64)
+        premerge_result = self._premerge_chunk_fragments(seg, affs)
         path = self._raw_chunk_path(chunk_key)
         self._write_chunk_seg(path, seg)
-        return {"chunk_path": str(path), "max_id": int(seg.max())}
+        return {
+            "chunk_path": str(path),
+            "max_id": int(seg.max()) if seg.size else 0,
+            "fragment_init": self.config.fragment_init,
+            "initial_fragments": int(n_fragments),
+            **premerge_result,
+        }
+
+    def _premerge_chunk_fragments(
+        self,
+        seg: np.ndarray,
+        affs: np.ndarray,
+    ) -> Dict[str, Any]:
+        """Conservatively merge obvious intra-chunk fragment edges."""
+        threshold = float(self.config.chunk_affinity_threshold)
+        if threshold >= 1.0:
+            return {
+                "chunk_affinity_threshold": threshold,
+                "premerge_edges": 0,
+                "premerge_segments": int(seg.max()) if seg.size else 0,
+            }
+
+        rg_affs, id1, id2 = get_region_graph(
+            seg,
+            affs,
+            scoring_function=self.config.affinity_scoring_function,
+        )
+        if len(rg_affs) == 0:
+            return {
+                "chunk_affinity_threshold": threshold,
+                "premerge_edges": 0,
+                "premerge_segments": int(seg.max()) if seg.size else 0,
+            }
+
+        ids, cnts = np.unique(seg, return_counts=True)
+        max_id = int(ids.max()) if len(ids) else 0
+        counts = np.zeros(max_id + 1, dtype=np.uint64)
+        counts[ids] = cnts.astype(np.uint64, copy=False)
+
+        # size_th greater than the chunk volume makes merge_segments behave as
+        # a pure affinity-threshold merge while preserving its compact relabel.
+        n_segments = merge_segments(
+            seg,
+            rg_affs,
+            id1,
+            id2,
+            counts,
+            size_th=int(seg.size) + 1,
+            weight_th=threshold,
+            dust_th=0,
+        )
+        return {
+            "chunk_affinity_threshold": threshold,
+            "premerge_edges": int(np.count_nonzero(rg_affs > threshold)),
+            "premerge_segments": int(n_segments),
+        }
 
     def handle_stitch_overlap(self, record: TaskRecord) -> Dict[str, Any]:
         """Consensus-match fragment IDs in overlap zone between adjacent chunks."""
@@ -626,7 +753,7 @@ class LargeDecodeRunner:
 
         from ._merge import get_region_graph_rich
         rg_affs, id1, id2, contact_areas = get_region_graph_rich(
-            seg, affs, scoring_function=self.config.scoring_function,
+            seg, affs, scoring_function=self.config.affinity_scoring_function,
         )
 
         path = self._rg_chunk_path(chunk_key)
@@ -771,29 +898,146 @@ class LargeDecodeRunner:
 
     def _read_affinity_chunk(self, chunk: ChunkRef) -> np.ndarray:
         h5py = _require_h5py()
+        edge_offset = int(self.config.edge_offset)
+        chunk_dims = tuple(int(chunk.stop[i] - chunk.start[i]) for i in range(3))
         with h5py.File(self.config.affinity_path, "r") as handle:
             dataset = handle[self.config.affinity_dataset]
-            affs = np.array(
-                dataset[
-                    0:3,
-                    chunk.start[0]:chunk.stop[0],
-                    chunk.start[1]:chunk.stop[1],
-                    chunk.start[2]:chunk.stop[2],
-                ],
-            )
+            if edge_offset == 1:
+                affs = np.array(
+                    dataset[
+                        0:3,
+                        chunk.start[0]:chunk.stop[0],
+                        chunk.start[1]:chunk.stop[1],
+                        chunk.start[2]:chunk.stop[2],
+                    ],
+                )
+                self._apply_affinity_mask(
+                    affs,
+                    start=chunk.start,
+                    stop=chunk.stop,
+                )
+            else:
+                # BANIS source-stored -> waterz destination-stored: for each
+                # channel c, dst[c, v] = src[c, v - 1] along spatial axis c
+                # (zero at global v=0). Read one extra voxel on the low side
+                # per axis when available, then per-channel shift.
+                extra = tuple(1 if chunk.start[i] > 0 else 0 for i in range(3))
+                ext_affs = np.array(
+                    dataset[
+                        0:3,
+                        chunk.start[0] - extra[0]:chunk.stop[0],
+                        chunk.start[1] - extra[1]:chunk.stop[1],
+                        chunk.start[2] - extra[2]:chunk.stop[2],
+                    ],
+                )
+                self._apply_affinity_mask(
+                    ext_affs,
+                    start=tuple(chunk.start[i] - extra[i] for i in range(3)),
+                    stop=chunk.stop,
+                )
+                affs = np.zeros((3, *chunk_dims), dtype=ext_affs.dtype)
+                for c in range(3):
+                    # Slice channel c, with axis c+1 picking the shifted range
+                    # (when extra[c]==1) and other axes trimming off the extra
+                    # voxels from the low side so the result is chunk_dims.
+                    slicer = [c]
+                    for i in range(3):
+                        if i == c and extra[c] == 1:
+                            slicer.append(slice(0, chunk_dims[i]))
+                        else:
+                            slicer.append(
+                                slice(extra[i], extra[i] + chunk_dims[i])
+                            )
+                    chan_3d = ext_affs[tuple(slicer)]
+                    if extra[c] == 0:
+                        # Global low boundary along axis c: roll +1, zero v=0.
+                        chan_3d = np.roll(chan_3d, shift=1, axis=c)
+                        zero_slicer = [slice(None)] * 3
+                        zero_slicer[c] = 0
+                        chan_3d[tuple(zero_slicer)] = 0
+                    affs[c] = chan_3d
         if self.config.channel_order == "xyz":
             affs = affs[[2, 1, 0]]
         return np.ascontiguousarray(affs)
 
+    def _read_mask_dataset(self):
+        h5py = _require_h5py()
+        mask_path = getattr(self.config, "affinity_mask_path", "") or ""
+        if not mask_path:
+            return None, None
+        handle = h5py.File(mask_path, "r")
+        dataset_name = getattr(self.config, "affinity_mask_dataset", "main") or "main"
+        try:
+            if dataset_name in handle:
+                dataset = handle[dataset_name]
+            elif "main" in handle:
+                dataset = handle["main"]
+            else:
+                keys = list(handle.keys())
+                if len(keys) != 1:
+                    raise ValueError(
+                        f"affinity_mask_path={mask_path}: expected dataset {dataset_name!r}, "
+                        f"'main', or a single dataset, got {keys}"
+                    )
+                dataset = handle[keys[0]]
+            return handle, dataset
+        except Exception:
+            handle.close()
+            raise
+
+    def _apply_affinity_mask(
+        self,
+        affs: np.ndarray,
+        *,
+        start: Sequence[int],
+        stop: Sequence[int],
+    ) -> None:
+        if not (getattr(self.config, "affinity_mask_path", "") or ""):
+            return
+        mask_handle, mask_dataset = self._read_mask_dataset()
+        if mask_handle is None or mask_dataset is None:
+            return
+        try:
+            expected_shape = tuple(int(v) for v in (self.config.volume_shape or ()))
+            if expected_shape and tuple(mask_dataset.shape) != expected_shape:
+                raise ValueError(
+                    f"affinity mask shape {tuple(mask_dataset.shape)} != volume shape "
+                    f"{expected_shape}"
+                )
+            mask = np.array(
+                mask_dataset[
+                    int(start[0]):int(stop[0]),
+                    int(start[1]):int(stop[1]),
+                    int(start[2]):int(stop[2]),
+                ],
+            )
+        finally:
+            mask_handle.close()
+
+        if mask.shape != affs.shape[1:]:
+            raise ValueError(
+                f"affinity mask chunk shape {mask.shape} != affinity chunk spatial shape "
+                f"{affs.shape[1:]}"
+            )
+        zero_idx = ~mask if mask.dtype == np.bool_ else (mask == 0)
+        if zero_idx.any():
+            affs[:, zero_idx] = 0
+
     def _read_boundary_affinity(self, border: BorderRef) -> np.ndarray:
         h5py = _require_h5py()
         channel_index = self.config.channel_index(border.axis)
+        # Source-stored BANIS affinities: the edge between the src chunk's
+        # last voxel and the dst chunk's first voxel is at the SRC voxel
+        # (dst.start - 1). Destination-stored waterz native: at dst.start.
+        edge_offset = int(self.config.edge_offset)
+        axis_index = {"z": 0, "y": 1, "x": 2}[border.axis]
+        boundary_pos = int(border.dst.start[axis_index]) - (1 if edge_offset == 0 else 0)
         with h5py.File(self.config.affinity_path, "r") as handle:
             dataset = handle[self.config.affinity_dataset]
             if border.axis == "z":
                 data = dataset[
                     channel_index,
-                    border.dst.start[0],
+                    boundary_pos,
                     border.src.start[1]:border.src.stop[1],
                     border.src.start[2]:border.src.stop[2],
                 ]
@@ -801,7 +1045,7 @@ class LargeDecodeRunner:
                 data = dataset[
                     channel_index,
                     border.src.start[0]:border.src.stop[0],
-                    border.dst.start[1],
+                    boundary_pos,
                     border.src.start[2]:border.src.stop[2],
                 ]
             else:
@@ -809,9 +1053,35 @@ class LargeDecodeRunner:
                     channel_index,
                     border.src.start[0]:border.src.stop[0],
                     border.src.start[1]:border.src.stop[1],
-                    border.dst.start[2],
+                    boundary_pos,
                 ]
             arr = np.array(data)
+            mask_handle, mask_dataset = self._read_mask_dataset()
+            if mask_handle is not None and mask_dataset is not None:
+                try:
+                    if border.axis == "z":
+                        mask_data = mask_dataset[
+                            boundary_pos,
+                            border.src.start[1]:border.src.stop[1],
+                            border.src.start[2]:border.src.stop[2],
+                        ]
+                    elif border.axis == "y":
+                        mask_data = mask_dataset[
+                            border.src.start[0]:border.src.stop[0],
+                            boundary_pos,
+                            border.src.start[2]:border.src.stop[2],
+                        ]
+                    else:
+                        mask_data = mask_dataset[
+                            border.src.start[0]:border.src.stop[0],
+                            border.src.start[1]:border.src.stop[1],
+                            boundary_pos,
+                        ]
+                    zero_idx = ~mask_data if mask_data.dtype == np.bool_ else (mask_data == 0)
+                    if np.asarray(zero_idx).any():
+                        arr[zero_idx] = 0
+                finally:
+                    mask_handle.close()
             if arr.dtype == np.uint8:
                 return arr.astype(np.float32) / 255.0
             return np.asarray(arr, dtype=np.float32)

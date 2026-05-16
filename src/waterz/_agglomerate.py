@@ -104,8 +104,8 @@ def _compile_module(
 ) -> "ModuleType":
     """Compile and cache the agglomerate Cython/C++ module.
 
-    Returns the compiled module with ``agglomerate()`` and
-    ``buildRegionGraphOnly()`` entry points.
+    Returns the compiled module with ``agglomerate()``,
+    ``buildFragmentsOnly()``, and ``buildRegionGraphOnly()`` entry points.
     """
     import fcntl
     import os
@@ -212,6 +212,48 @@ def _compile_module(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+
+def initialize_fragments_3d(
+    affs: NDArray,
+    *,
+    aff_threshold_low: float = 0.0001,
+    aff_threshold_high: float = 0.9999,
+    seg_dtype: np.dtype | str = "uint64",
+    force_rebuild: bool = False,
+) -> tuple[NDArray, int]:
+    """Run waterz's 3D watershed initialization only.
+
+    This is the same initial watershed step used by :func:`agglomerate` when
+    no fragments are supplied, but it stops before region-graph construction
+    and agglomeration.  Input affinities must be in ``(3, Z, Y, X)`` order.
+    """
+    affs = np.ascontiguousarray(affs)
+    aff_dtype = affs.dtype
+    if aff_dtype == np.float64:
+        affs = affs.astype(np.float32)
+        aff_dtype = np.dtype("float32")
+    if aff_dtype not in _AFF_DTYPE_MAP:
+        raise TypeError(
+            f"affs.dtype must be float32 or uint8, got {aff_dtype}"
+        )
+
+    seg_dtype = np.dtype(seg_dtype)
+    if seg_dtype not in _SEG_DTYPE_MAP:
+        raise ValueError(f"Unsupported seg_dtype {seg_dtype}; expected uint64 or uint32")
+
+    module = _compile_module(
+        "OneMinus<MeanAffinity<RegionGraphType, ScoreValue>>",
+        aff_dtype=aff_dtype,
+        seg_dtype=seg_dtype,
+        force_rebuild=force_rebuild,
+    )
+    seg, n_fragments = module.buildFragmentsOnly(
+        affs,
+        aff_threshold_low,
+        aff_threshold_high,
+    )
+    return seg, int(n_fragments)
 
 
 def agglomerate(

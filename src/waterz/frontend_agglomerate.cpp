@@ -114,6 +114,37 @@ initialize(
 	return initial_state;
 }
 
+std::size_t
+buildFragmentsOnly(
+		std::size_t     width,
+		std::size_t     height,
+		std::size_t     depth,
+		const AffValue* affinity_data,
+		SegID*          segmentation_data,
+		AffValue        affThresholdLow,
+		AffValue        affThresholdHigh) {
+
+	// wrap arrays (no copy)
+	affinity_graph_ref<AffValue> affinities(
+			affinity_data,
+			boost::extents[3][width][height][depth]
+	);
+	volume_ref<SegID> segmentation_vol(
+			segmentation_data,
+			boost::extents[width][height][depth]
+	);
+
+	counts_t<std::size_t> sizes;
+	watershed(
+			affinities,
+			affThresholdLow,
+			affThresholdHigh,
+			segmentation_vol,
+			sizes);
+
+	return sizes.size() > 0 ? sizes.size() - 1 : 0;
+}
+
 std::vector<Merge>
 mergeUntil(
 		WaterzState& state,
