@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 import waterz as wz
+from waterz.large_workflow import ChunkRef
 
 h5py = pytest.importorskip("h5py")
 
@@ -58,6 +59,135 @@ def test_large_decode_runner_serial_end_to_end(tmp_path: Path) -> None:
 
     counts = runner.orchestrator.stage_counts()
     assert counts["assemble"]["succeeded"] == 1
+
+
+def test_affinity_layout_xyz_matches_zyx(tmp_path: Path) -> None:
+    """Feeding the same affinities in XYZ layout (with affinity_layout=xyz)
+    must reproduce the segmentation produced from the ZYX-stored version."""
+    aff_zyx_path = tmp_path / "aff_zyx.h5"
+    aff_xyz_path = tmp_path / "aff_xyz.h5"
+    mask_zyx_path = tmp_path / "mask_zyx.h5"
+    mask_xyz_path = tmp_path / "mask_xyz.h5"
+    out_zyx_path = tmp_path / "seg_zyx.h5"
+    out_xyz_path = tmp_path / "seg_xyz.h5"
+
+    # Use a non-symmetric volume so an erroneous axis swap would corrupt the
+    # boundary geometry and produce a different segmentation. Anisotropic Z
+    # mimics the NISB setup where Z is the thinnest physical axis.
+    rng = np.random.default_rng(0)
+    aff_zyx = rng.uniform(0.0, 1.0, size=(3, 4, 7, 8)).astype(np.float32)
+    # Carve a low-affinity slab to encourage at least two distinct segments.
+    aff_zyx[0, 2, :, :] = 0.0
+    mask_zyx = np.ones((4, 7, 8), dtype=np.uint8)
+
+    _write_affinities(aff_zyx_path, aff_zyx)
+    _write_mask(mask_zyx_path, mask_zyx)
+
+    # XYZ-stored mirrors: transpose spatial axes 0,1,2 -> 2,1,0 and channels
+    # 0,1,2 -> 2,1,0 (so source ch0 means X-aff in the XYZ store, matching the
+    # channel_order="xyz" reorder applied by _read_affinity_chunk).
+    aff_xyz = np.transpose(aff_zyx[[2, 1, 0]], (0, 3, 2, 1))
+    mask_xyz = np.transpose(mask_zyx, (2, 1, 0))
+    _write_affinities(aff_xyz_path, aff_xyz)
+    _write_mask(mask_xyz_path, mask_xyz)
+
+    common_kwargs = dict(
+        chunk_shape=(2, 7, 8),
+        overlap=(1, 0, 0),
+        thresholds=(0.5,),
+        aff_threshold_low=0.3,
+        aff_threshold_high=0.999,
+        write_output=True,
+        # Treat affinities as already destination-stored to keep the test
+        # focused on axis-order plumbing rather than BANIS conversion.
+        edge_offset=1,
+    )
+
+    runner_zyx = wz.LargeDecodeRunner.create(
+        affinity_path=str(aff_zyx_path),
+        affinity_mask_path=str(mask_zyx_path),
+        workflow_root=str(tmp_path / "wf_zyx"),
+        output_path=str(out_zyx_path),
+        channel_order="zyx",
+        affinity_layout="zyx",
+        output_layout="zyx",
+        **common_kwargs,
+    )
+    runner_zyx.run_serial(poll_interval=0.01)
+    runner_zyx.wait(timeout=10.0, poll_interval=0.01)
+
+    runner_xyz = wz.LargeDecodeRunner.create(
+        affinity_path=str(aff_xyz_path),
+        affinity_mask_path=str(mask_xyz_path),
+        workflow_root=str(tmp_path / "wf_xyz"),
+        output_path=str(out_xyz_path),
+        channel_order="xyz",
+        affinity_layout="xyz",
+        output_layout="xyz",
+        **common_kwargs,
+    )
+    runner_xyz.run_serial(poll_interval=0.01)
+    runner_xyz.wait(timeout=10.0, poll_interval=0.01)
+
+    with h5py.File(out_zyx_path, "r") as handle:
+        seg_zyx = np.array(handle["main"], dtype=np.uint64)
+    with h5py.File(out_xyz_path, "r") as handle:
+        seg_xyz = np.array(handle["main"], dtype=np.uint64)
+
+    # output_layout="xyz" writes the assembled volume in XYZ — transpose back
+    # to ZYX before comparison.
+    assert seg_xyz.shape == (8, 7, 4)
+    seg_xyz_as_zyx = np.transpose(seg_xyz, (2, 1, 0))
+    assert seg_xyz_as_zyx.shape == seg_zyx.shape
+
+    # Segment IDs may differ — what we need is identical partitioning.
+    def _normalize(seg: np.ndarray) -> np.ndarray:
+        out = np.zeros_like(seg)
+        for new_id, old_id in enumerate(np.unique(seg), start=0):
+            out[seg == old_id] = new_id
+        return out
+
+    assert np.array_equal(_normalize(seg_zyx), _normalize(seg_xyz_as_zyx))
+
+
+def test_xyz_channel_order_applies_before_source_edge_shift(tmp_path: Path) -> None:
+    """NISB/BANIS source-stored affinities must reorder channels before shift."""
+    aff_path = tmp_path / "aff_xyz.h5"
+    workflow_root = tmp_path / "workflow"
+
+    zyx_shape = (5, 6, 7)
+    zyx_channels = np.zeros((3, *zyx_shape), dtype=np.float32)
+    zz, yy, xx = np.indices(zyx_shape)
+    for channel in range(3):
+        zyx_channels[channel] = (channel + 1) * 1000 + zz * 100 + yy * 10 + xx
+
+    # Store as NISB does: spatial axes XYZ and source channels X,Y,Z.
+    aff_xyz = np.transpose(zyx_channels[[2, 1, 0]], (0, 3, 2, 1))
+    _write_affinities(aff_path, aff_xyz)
+
+    runner = wz.LargeDecodeRunner.create(
+        affinity_path=str(aff_path),
+        workflow_root=str(workflow_root),
+        chunk_shape=(5, 6, 7),
+        channel_order="xyz",
+        affinity_layout="xyz",
+        edge_offset=0,
+    )
+
+    chunk = ChunkRef(index=(0, 0, 0), start=(1, 1, 1), stop=(4, 5, 6))
+    actual = runner._read_affinity_chunk(chunk)
+
+    expected = np.zeros((3, 3, 4, 5), dtype=np.float32)
+    for channel in range(3):
+        slices = []
+        for axis in range(3):
+            if axis == channel:
+                slices.append(slice(chunk.start[axis] - 1, chunk.stop[axis] - 1))
+            else:
+                slices.append(slice(chunk.start[axis], chunk.stop[axis]))
+        expected[channel] = zyx_channels[(channel, *slices)]
+
+    np.testing.assert_array_equal(actual, expected)
 
 
 def test_large_decode_overlap_uses_waterz_3d_init(

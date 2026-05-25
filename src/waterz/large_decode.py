@@ -97,6 +97,17 @@ class LargeDecodeConfig:
     aff_threshold_low: float = 0.0001
     aff_threshold_high: float = 0.9999
     channel_order: str = "zyx"
+    # Spatial axis order of the source affinity H5 (and matching mask H5).
+    # "zyx" means the H5 spatial axes are (Z, Y, X) — waterz-native, no transpose.
+    # "xyz" means the H5 spatial axes are (X, Y, Z); per-chunk reads transpose
+    # to waterz (Z, Y, X) in memory. YAML volume_shape/chunk_shape/overlap are
+    # always interpreted in waterz ZYX order regardless of this setting.
+    affinity_layout: str = "zyx"
+    # Spatial axis order of the written assembled.h5. "zyx" writes in waterz
+    # native order. "xyz" creates the dataset with transposed shape and
+    # transposes each chunk's seg from ZYX to XYZ before pasting, so downstream
+    # consumers see the original H5 axis order.
+    output_layout: str = "zyx"
     border_threshold: float = 0.0
     compute_fragments: bool = False
     seed_method: str = "maxima_distance"
@@ -138,6 +149,12 @@ class LargeDecodeConfig:
         self.channel_order = str(self.channel_order).lower()
         if self.channel_order not in {"zyx", "xyz"}:
             raise ValueError("channel_order must be 'zyx' or 'xyz'.")
+        self.affinity_layout = str(self.affinity_layout).lower()
+        if self.affinity_layout not in {"zyx", "xyz"}:
+            raise ValueError("affinity_layout must be 'zyx' or 'xyz'.")
+        self.output_layout = str(self.output_layout).lower()
+        if self.output_layout not in {"zyx", "xyz"}:
+            raise ValueError("output_layout must be 'zyx' or 'xyz'.")
         self.edge_offset = int(self.edge_offset)
         if self.edge_offset not in (0, 1):
             raise ValueError(
@@ -196,6 +213,8 @@ class LargeDecodeConfig:
             aff_threshold_low=float(data.get("aff_threshold_low", 0.0001)),
             aff_threshold_high=float(data.get("aff_threshold_high", 0.9999)),
             channel_order=str(data.get("channel_order", "zyx")),
+            affinity_layout=str(data.get("affinity_layout", "zyx")),
+            output_layout=str(data.get("output_layout", "zyx")),
             border_threshold=float(data.get("border_threshold", 0.0)),
             compute_fragments=bool(data.get("compute_fragments", False)),
             seed_method=str(data.get("seed_method", "maxima_distance")),
@@ -253,6 +272,8 @@ class LargeDecodeRunner:
         aff_threshold_low: float = 0.0001,
         aff_threshold_high: float = 0.9999,
         channel_order: str = "zyx",
+        affinity_layout: str = "zyx",
+        output_layout: str = "zyx",
         edge_offset: int = 1,
         write_output: bool = False,
         output_path: Optional[str] = None,
@@ -281,6 +302,8 @@ class LargeDecodeRunner:
             aff_threshold_low=float(aff_threshold_low),
             aff_threshold_high=float(aff_threshold_high),
             channel_order=str(channel_order),
+            affinity_layout=str(affinity_layout),
+            output_layout=str(output_layout),
             edge_offset=int(edge_offset),
             write_output=bool(write_output),
             output_path=str(output_path) if output_path is not None else None,
@@ -633,26 +656,48 @@ class LargeDecodeRunner:
         output_path = self.config.resolved_output_path
         output_path.parent.mkdir(parents=True, exist_ok=True)
         h5py = _require_h5py()
-        shape = tuple(int(v) for v in self.config.volume_shape or ())
-        chunk_shape = tuple(min(shape[i], self.config.chunk_shape[i]) for i in range(3))
+        waterz_shape = tuple(int(v) for v in self.config.volume_shape or ())
+        waterz_chunk_shape = tuple(
+            min(waterz_shape[i], self.config.chunk_shape[i]) for i in range(3)
+        )
+        out_layout = self.config.output_layout
+        if out_layout == "xyz":
+            # ZYX -> XYZ for both the dataset shape and the chunk hints.
+            out_shape = (waterz_shape[2], waterz_shape[1], waterz_shape[0])
+            out_chunks = (
+                waterz_chunk_shape[2],
+                waterz_chunk_shape[1],
+                waterz_chunk_shape[0],
+            )
+        else:
+            out_shape = waterz_shape
+            out_chunks = waterz_chunk_shape
         kwargs = _compression_kwargs(
             self.config.compression, self.config.compression_level
         )
         with h5py.File(output_path, "w") as handle:
             dataset = handle.create_dataset(
                 self.config.output_dataset,
-                shape=shape,
+                shape=out_shape,
                 dtype=np.uint64,
-                chunks=chunk_shape,
+                chunks=out_chunks,
                 **kwargs,
             )
             for chunk in self.chunks:
                 seg = self._read_chunk_seg(self._final_chunk_path(chunk.key))
-                dataset[
-                    chunk.start[0] : chunk.stop[0],
-                    chunk.start[1] : chunk.stop[1],
-                    chunk.start[2] : chunk.stop[2],
-                ] = seg
+                if out_layout == "xyz":
+                    seg_xyz = np.transpose(seg, (2, 1, 0))
+                    dataset[
+                        chunk.start[2] : chunk.stop[2],
+                        chunk.start[1] : chunk.stop[1],
+                        chunk.start[0] : chunk.stop[0],
+                    ] = seg_xyz
+                else:
+                    dataset[
+                        chunk.start[0] : chunk.stop[0],
+                        chunk.start[1] : chunk.stop[1],
+                        chunk.start[2] : chunk.stop[2],
+                    ] = seg
         return {"output_path": str(output_path)}
 
     # ------------------------------------------------------------------
@@ -939,7 +984,12 @@ class LargeDecodeRunner:
                 raise ValueError(
                     f"Expected affinity dataset with shape (C>=3, Z, Y, X), got {dataset.shape}."
                 )
-            return tuple(int(v) for v in dataset.shape[1:])
+            h5_spatial = tuple(int(v) for v in dataset.shape[1:])
+        # Internal volume_shape is always in waterz (Z, Y, X) order. For an
+        # XYZ-stored H5 the spatial dims are (X, Y, Z) — swap to (Z, Y, X).
+        if self.config.affinity_layout == "xyz":
+            return (h5_spatial[2], h5_spatial[1], h5_spatial[0])
+        return h5_spatial
 
     def _config_path(self) -> Path:
         return self.root / self.CONFIG_FILENAME
@@ -984,6 +1034,56 @@ class LargeDecodeRunner:
         with path.open("r", encoding="utf-8") as handle:
             return dict(json.load(handle))
 
+    # ------------------------------------------------------------------
+    # Axis-order helpers (affinity_layout)
+    # ------------------------------------------------------------------
+    #
+    # waterz internally interprets array axes as (Z, Y, X); chunk.start/stop
+    # and YAML volume_shape/chunk_shape/overlap are also in this waterz ZYX
+    # order regardless of how the H5 is stored. The helpers below convert
+    # waterz coordinates into the H5's physical spatial axes when the H5 is
+    # XYZ-stored (e.g. raw_x1_ch0-1-2.h5 from BANIS, shape (C, X, Y, Z)).
+
+    def _waterz_to_h5_indices(
+        self, start: Sequence[int], stop: Sequence[int]
+    ) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+        """Map a waterz (Z, Y, X) start/stop pair into H5 physical indices.
+
+        For ``affinity_layout="xyz"`` the H5 stores (X, Y, Z), so H5 axis 0
+        sees waterz X (start[2]), axis 1 sees Y (start[1]), axis 2 sees Z
+        (start[0]).
+        """
+        s = tuple(int(v) for v in start)
+        e = tuple(int(v) for v in stop)
+        if self.config.affinity_layout == "zyx":
+            return s, e
+        return (s[2], s[1], s[0]), (e[2], e[1], e[0])
+
+    def _h5_to_waterz_affs(self, arr: np.ndarray) -> np.ndarray:
+        """Transpose a 4D (C, h5_ax0, h5_ax1, h5_ax2) array to (C, Z, Y, X)."""
+        if self.config.affinity_layout == "zyx":
+            return arr
+        # H5 (C, X, Y, Z) -> waterz (C, Z, Y, X): spatial axes 0,1,2 -> 2,1,0
+        return np.transpose(arr, (0, 3, 2, 1))
+
+    def _h5_to_waterz_mask(self, mask: np.ndarray) -> np.ndarray:
+        """Transpose a 3D H5 mask block into waterz (Z, Y, X) order."""
+        if self.config.affinity_layout == "zyx":
+            return mask
+        return np.transpose(mask, (2, 1, 0))
+
+    def _channels_to_waterz_order(self, affs: np.ndarray) -> np.ndarray:
+        """Return affinities with channels ordered as waterz (Z, Y, X)."""
+        if self.config.channel_order == "xyz":
+            return affs[[2, 1, 0]]
+        return affs
+
+    def _waterz_to_h5_axis(self, waterz_axis: int) -> int:
+        """Which H5 spatial axis carries data for a given waterz logical axis."""
+        if self.config.affinity_layout == "zyx":
+            return int(waterz_axis)
+        return (2, 1, 0)[int(waterz_axis)]
+
     def _read_affinity_chunk(self, chunk: ChunkRef) -> np.ndarray:
         h5py = _require_h5py()
         edge_offset = int(self.config.edge_offset)
@@ -991,38 +1091,48 @@ class LargeDecodeRunner:
         with h5py.File(self.config.affinity_path, "r") as handle:
             dataset = handle[self.config.affinity_dataset]
             if edge_offset == 1:
+                h5_start, h5_stop = self._waterz_to_h5_indices(chunk.start, chunk.stop)
                 affs = np.array(
                     dataset[
                         0:3,
-                        chunk.start[0] : chunk.stop[0],
-                        chunk.start[1] : chunk.stop[1],
-                        chunk.start[2] : chunk.stop[2],
+                        h5_start[0] : h5_stop[0],
+                        h5_start[1] : h5_stop[1],
+                        h5_start[2] : h5_stop[2],
                     ],
                 )
+                affs = self._h5_to_waterz_affs(affs)
                 self._apply_affinity_mask(
                     affs,
                     start=chunk.start,
                     stop=chunk.stop,
                 )
+                affs = self._channels_to_waterz_order(affs)
             else:
                 # BANIS source-stored -> waterz destination-stored: for each
                 # channel c, dst[c, v] = src[c, v - 1] along spatial axis c
                 # (zero at global v=0). Read one extra voxel on the low side
-                # per axis when available, then per-channel shift.
+                # per *waterz* axis when available, then per-channel shift.
+                # The extra voxels are then translated into H5 physical axes.
                 extra = tuple(1 if chunk.start[i] > 0 else 0 for i in range(3))
+                wz_start_ext = tuple(chunk.start[i] - extra[i] for i in range(3))
+                h5_start_ext, h5_stop = self._waterz_to_h5_indices(
+                    wz_start_ext, chunk.stop
+                )
                 ext_affs = np.array(
                     dataset[
                         0:3,
-                        chunk.start[0] - extra[0] : chunk.stop[0],
-                        chunk.start[1] - extra[1] : chunk.stop[1],
-                        chunk.start[2] - extra[2] : chunk.stop[2],
+                        h5_start_ext[0] : h5_stop[0],
+                        h5_start_ext[1] : h5_stop[1],
+                        h5_start_ext[2] : h5_stop[2],
                     ],
                 )
+                ext_affs = self._h5_to_waterz_affs(ext_affs)
                 self._apply_affinity_mask(
                     ext_affs,
-                    start=tuple(chunk.start[i] - extra[i] for i in range(3)),
+                    start=wz_start_ext,
                     stop=chunk.stop,
                 )
+                ext_affs = self._channels_to_waterz_order(ext_affs)
                 affs = np.zeros((3, *chunk_dims), dtype=ext_affs.dtype)
                 for c in range(3):
                     # Slice channel c, with axis c+1 picking the shifted range
@@ -1042,8 +1152,6 @@ class LargeDecodeRunner:
                         zero_slicer[c] = 0
                         chan_3d[tuple(zero_slicer)] = 0
                     affs[c] = chan_3d
-        if self.config.channel_order == "xyz":
-            affs = affs[[2, 1, 0]]
         return np.ascontiguousarray(affs)
 
     def _read_mask_dataset(self):
@@ -1078,28 +1186,45 @@ class LargeDecodeRunner:
         start: Sequence[int],
         stop: Sequence[int],
     ) -> None:
+        """Apply mask to ``affs`` (already in waterz ZYX). ``start``/``stop`` are waterz."""
         if not (getattr(self.config, "affinity_mask_path", "") or ""):
             return
         mask_handle, mask_dataset = self._read_mask_dataset()
         if mask_handle is None or mask_dataset is None:
             return
         try:
-            expected_shape = tuple(int(v) for v in (self.config.volume_shape or ()))
-            if expected_shape and tuple(mask_dataset.shape) != expected_shape:
-                raise ValueError(
-                    f"affinity mask shape {tuple(mask_dataset.shape)} != volume shape "
-                    f"{expected_shape}"
-                )
-            mask = np.array(
+            # volume_shape is in waterz ZYX. The mask H5 follows affinity_layout.
+            expected_waterz_shape = tuple(
+                int(v) for v in (self.config.volume_shape or ())
+            )
+            expected_h5_shape: tuple[int, ...]
+            if expected_waterz_shape:
+                if self.config.affinity_layout == "zyx":
+                    expected_h5_shape = expected_waterz_shape
+                else:
+                    expected_h5_shape = (
+                        expected_waterz_shape[2],
+                        expected_waterz_shape[1],
+                        expected_waterz_shape[0],
+                    )
+                if tuple(mask_dataset.shape) != expected_h5_shape:
+                    raise ValueError(
+                        f"affinity mask shape {tuple(mask_dataset.shape)} != expected "
+                        f"H5 shape {expected_h5_shape} (volume_shape={expected_waterz_shape} "
+                        f"in waterz ZYX, affinity_layout={self.config.affinity_layout})"
+                    )
+            h5_start, h5_stop = self._waterz_to_h5_indices(start, stop)
+            mask_block = np.array(
                 mask_dataset[
-                    int(start[0]) : int(stop[0]),
-                    int(start[1]) : int(stop[1]),
-                    int(start[2]) : int(stop[2]),
+                    h5_start[0] : h5_stop[0],
+                    h5_start[1] : h5_stop[1],
+                    h5_start[2] : h5_stop[2],
                 ],
             )
         finally:
             mask_handle.close()
 
+        mask = self._h5_to_waterz_mask(mask_block)
         if mask.shape != affs.shape[1:]:
             raise ValueError(
                 f"affinity mask chunk shape {mask.shape} != affinity chunk spatial shape "
@@ -1116,55 +1241,38 @@ class LargeDecodeRunner:
         # last voxel and the dst chunk's first voxel is at the SRC voxel
         # (dst.start - 1). Destination-stored waterz native: at dst.start.
         edge_offset = int(self.config.edge_offset)
-        axis_index = {"z": 0, "y": 1, "x": 2}[border.axis]
-        boundary_pos = int(border.dst.start[axis_index]) - (
+        waterz_axis_index = {"z": 0, "y": 1, "x": 2}[border.axis]
+        boundary_pos = int(border.dst.start[waterz_axis_index]) - (
             1 if edge_offset == 0 else 0
         )
+
+        # Build the H5 slicer (after the channel axis) for the 2D boundary face,
+        # using waterz->H5 axis mapping. The boundary is at ``boundary_pos`` on
+        # the H5 axis that corresponds to the waterz boundary axis; the other
+        # two H5 axes get range slices derived from src.start/stop after
+        # remapping.
+        h5_boundary_axis = self._waterz_to_h5_axis(waterz_axis_index)
+        h5_slicer: list = [None, None, None]
+        h5_slicer[h5_boundary_axis] = int(boundary_pos)
+        for waterz_ax in range(3):
+            if waterz_ax == waterz_axis_index:
+                continue
+            h5_ax = self._waterz_to_h5_axis(waterz_ax)
+            h5_slicer[h5_ax] = slice(
+                int(border.src.start[waterz_ax]),
+                int(border.src.stop[waterz_ax]),
+            )
+
         with h5py.File(self.config.affinity_path, "r") as handle:
             dataset = handle[self.config.affinity_dataset]
-            if border.axis == "z":
-                data = dataset[
-                    channel_index,
-                    boundary_pos,
-                    border.src.start[1] : border.src.stop[1],
-                    border.src.start[2] : border.src.stop[2],
-                ]
-            elif border.axis == "y":
-                data = dataset[
-                    channel_index,
-                    border.src.start[0] : border.src.stop[0],
-                    boundary_pos,
-                    border.src.start[2] : border.src.stop[2],
-                ]
-            else:
-                data = dataset[
-                    channel_index,
-                    border.src.start[0] : border.src.stop[0],
-                    border.src.start[1] : border.src.stop[1],
-                    boundary_pos,
-                ]
+            data = dataset[(channel_index, *h5_slicer)]
             arr = np.array(data)
+            arr = self._h5_face_to_waterz(arr, waterz_axis_index)
             mask_handle, mask_dataset = self._read_mask_dataset()
             if mask_handle is not None and mask_dataset is not None:
                 try:
-                    if border.axis == "z":
-                        mask_data = mask_dataset[
-                            boundary_pos,
-                            border.src.start[1] : border.src.stop[1],
-                            border.src.start[2] : border.src.stop[2],
-                        ]
-                    elif border.axis == "y":
-                        mask_data = mask_dataset[
-                            border.src.start[0] : border.src.stop[0],
-                            boundary_pos,
-                            border.src.start[2] : border.src.stop[2],
-                        ]
-                    else:
-                        mask_data = mask_dataset[
-                            border.src.start[0] : border.src.stop[0],
-                            border.src.start[1] : border.src.stop[1],
-                            boundary_pos,
-                        ]
+                    mask_data = np.array(mask_dataset[tuple(h5_slicer)])
+                    mask_data = self._h5_face_to_waterz(mask_data, waterz_axis_index)
                     zero_idx = (
                         ~mask_data if mask_data.dtype == np.bool_ else (mask_data == 0)
                     )
@@ -1175,6 +1283,22 @@ class LargeDecodeRunner:
             if arr.dtype == np.uint8:
                 return arr.astype(np.float32) / 255.0
             return np.asarray(arr, dtype=np.float32)
+
+    def _h5_face_to_waterz(
+        self, face: np.ndarray, waterz_axis_index: int
+    ) -> np.ndarray:
+        """Transpose a 2D H5 boundary face into waterz order.
+
+        The face has axes ``(h5_axis_a, h5_axis_b)`` where ``a, b`` are the two
+        H5 spatial axes that are NOT the boundary axis, in increasing numeric
+        order. waterz expects axes ``(other_waterz_axis_0, other_waterz_axis_1)``
+        in increasing waterz-axis order. For ``affinity_layout="zyx"`` these
+        coincide; for ``"xyz"`` the two remaining axes are reversed, so the
+        face needs a single transpose.
+        """
+        if self.config.affinity_layout == "zyx":
+            return face
+        return np.ascontiguousarray(face.T)
 
     def _write_chunk_seg(
         self, path: Path, seg: np.ndarray, *, compress: bool = False
