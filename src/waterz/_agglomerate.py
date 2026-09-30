@@ -195,7 +195,6 @@ def _compile_module(
 
         module = witty.compile_cython(
             pyx_source,
-            source_files=[str(frontend_cpp)],
             extra_link_args=["-std=c++11", str(obj_path)],
             extra_compile_args=["-std=c++11", "-w"],
             include_dirs=include_dirs,
