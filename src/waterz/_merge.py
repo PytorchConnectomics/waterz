@@ -290,6 +290,7 @@ def get_region_graph_rich(
 
 def merge_region_graphs(
     rg_list: list[Tuple[NDArray, NDArray, NDArray, NDArray]],
+    assume_disjoint_ids: bool = False,
 ) -> Tuple[NDArray[np.float32], NDArray[np.uint64], NDArray[np.uint64], NDArray[np.uint64]]:
     """Merge multiple region graphs via weighted-mean scoring by contact area.
 
@@ -297,6 +298,24 @@ def merge_region_graphs(
     ----------
     rg_list : list of (rg_affs, id1, id2, contact_areas) tuples
         Each tuple is as returned by :func:`get_region_graph_rich`.
+    assume_disjoint_ids : bool, default False
+        Set this only when the caller can *prove* that no two graphs in
+        rg_list will ever contain the same (u, v) edge -- e.g. because
+        each graph's node ids are drawn from a disjoint, non-overlapping
+        global id range, as is true of this package's own large_decode
+        chunked workflow (each chunk's local segmentation is offset into
+        its own exclusive global id range, by the id_offsets stage,
+        before that chunk's region graph is even built -- two chunks can
+        therefore never share a segment id, let alone an edge between
+        two segments). When set, this skips the O(E) grouping/dedup step
+        (no key array, no np.unique) entirely and just concatenates +
+        sorts, which is both faster and far lighter on memory for large
+        E -- at full-volume scale (~1 billion edges) the default path's
+        np.unique() call cannot even complete within 100GB of address
+        space, while this path is linear in the input size with a small
+        constant. Passing True when graphs can actually share edges will
+        silently keep duplicates instead of merging them, so only use it
+        when disjointness is structural, not just empirically observed.
 
     Returns
     -------
@@ -318,6 +337,17 @@ def merge_region_graphs(
     all_id2 = np.concatenate([rg[2] for rg in rg_list])
     all_areas = np.concatenate([rg[3] for rg in rg_list])
 
+    if assume_disjoint_ids:
+        if len(all_affs) == 0:
+            empty_f = np.empty(0, dtype=np.float32)
+            empty_id = np.empty(0, dtype=np.uint64)
+            return empty_f, empty_id, empty_id, empty_id.copy()
+        lo = np.minimum(all_id1, all_id2)
+        hi = np.maximum(all_id1, all_id2)
+        del all_id1, all_id2
+        order = np.argsort(-all_affs)
+        return all_affs[order], lo[order], hi[order], all_areas[order]
+
     if len(all_affs) == 0:
         empty_f = np.empty(0, dtype=np.float32)
         empty_id = np.empty(0, dtype=np.uint64)
@@ -326,13 +356,34 @@ def merge_region_graphs(
     # Canonicalize keys: (min(u,v), max(u,v))
     lo = np.minimum(all_id1, all_id2)
     hi = np.maximum(all_id1, all_id2)
+    del all_id1, all_id2
 
-    # Pack (lo, hi) into a structured array for grouping
-    keys = np.empty(len(lo), dtype=[("lo", np.uint64), ("hi", np.uint64)])
-    keys["lo"] = lo
-    keys["hi"] = hi
+    # If every id in this merge actually fits in 32 bits, pack (lo, hi)
+    # into a single uint64 key instead of a 16-byte structured dtype.
+    # This is checked against the real data (not assumed from a config
+    # flag or caller convention), so it stays correct for volumes large
+    # enough to need the full uint64 id space (e.g. Janelia-scale EM,
+    # where segment/fragment ids routinely exceed 2**32) -- those simply
+    # fall back to the structured-dtype path below, unchanged from
+    # before. A plain scalar uint64 key also sorts/uniques faster than a
+    # structured dtype, since it can use numpy's scalar-dtype fast path
+    # instead of generic element-wise comparison.
+    max_id = int(max(lo.max(initial=0), hi.max(initial=0)))
+    use_packed = max_id <= 0xFFFFFFFF
 
-    _, inverse, counts = np.unique(keys, return_inverse=True, return_counts=True)
+    if use_packed:
+        keys = (lo.astype(np.uint64) << np.uint64(32)) | hi.astype(np.uint64)
+    else:
+        keys = np.empty(len(lo), dtype=[("lo", np.uint64), ("hi", np.uint64)])
+        keys["lo"] = lo
+        keys["hi"] = hi
+
+    # return_index gives the first occurrence per unique key directly
+    # (vectorized in C), so no separate Python-level scan over `inverse`
+    # is needed to recover it.
+    _, first_idx, inverse, counts = np.unique(
+        keys, return_index=True, return_inverse=True, return_counts=True
+    )
     n_unique = len(counts)
 
     # Weighted sum: sum(score_i * area_i) and sum(area_i)
@@ -347,18 +398,13 @@ def merge_region_graphs(
     merged_affs = (weighted_sum / safe_area).astype(np.float32)
 
     # Extract canonical id pairs (take the first occurrence per unique key)
-    merged_id1 = np.empty(n_unique, dtype=np.uint64)
-    merged_id2 = np.empty(n_unique, dtype=np.uint64)
-    # Use the first occurrence for each unique key
-    first_idx = np.empty(n_unique, dtype=np.intp)
-    seen = np.zeros(n_unique, dtype=np.bool_)
-    for i in range(len(inverse)):
-        g = inverse[i]
-        if not seen[g]:
-            first_idx[g] = i
-            seen[g] = True
-    merged_id1[:] = lo[first_idx]
-    merged_id2[:] = hi[first_idx]
+    if use_packed:
+        first_keys = keys[first_idx]
+        merged_id1 = (first_keys >> np.uint64(32)).astype(np.uint64)
+        merged_id2 = (first_keys & np.uint64(0xFFFFFFFF)).astype(np.uint64)
+    else:
+        merged_id1 = lo[first_idx].astype(np.uint64, copy=False)
+        merged_id2 = hi[first_idx].astype(np.uint64, copy=False)
 
     # Sort descending by score
     order = np.argsort(-merged_affs)

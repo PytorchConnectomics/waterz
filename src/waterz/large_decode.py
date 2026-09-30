@@ -900,7 +900,16 @@ class LargeDecodeRunner:
                 )
             )
 
-        merged_affs, merged_id1, merged_id2, merged_areas = merge_region_graphs(rg_list)
+        # Each chunk's local segmentation ids were offset into their own
+        # exclusive global range by the id_offsets stage before this
+        # chunk's region graph was built, so no two chunks can ever
+        # share a segment id or edge -- safe to skip merge_region_graphs'
+        # dedup step, which cannot complete in bounded memory at full
+        # volume scale.
+        merged_affs, merged_id1, merged_id2, merged_areas = merge_region_graphs(
+            rg_list, assume_disjoint_ids=True
+        )
+        del rg_list
 
         path = self._merged_rg_path()
         path.parent.mkdir(parents=True, exist_ok=True)
